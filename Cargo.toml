@@ -1,0 +1,9 @@
+[package]
+authors = ["Scott Godwin <sgodwincs@gmail.com>"]
+edition = "2018"
+name = "ordered-multimap"
+version = "0.1.0"
+
+[dependencies]
+dlv-list = "0.1.4"
+hashbrown = "0.1.2"

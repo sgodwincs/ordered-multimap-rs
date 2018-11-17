@@ -1,7 +1,13 @@
 [package]
 authors = ["Scott Godwin <sgodwincs@gmail.com>"]
+categories = ["data-structures"]
+description = "Insertion ordered multimap"
 edition = "2018"
+homepage = "https://github.com/sgodwincs/ordered-multimap-rs"
+license = "MIT"
 name = "ordered-multimap"
+readme = "README.md"
+repository = "https://github.com/sgodwincs/ordered-multimap-rs"
 version = "0.1.0"
 
 [dependencies]

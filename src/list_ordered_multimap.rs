@@ -1,6 +1,5 @@
 use dlv_list::{
-    Drain as VecListDrain, Index, IntoIter as VecListIntoIter, Iter as VecListIter,
-    IterMut as VecListIterMut, VecList,
+    Drain as VecListDrain, Index, Iter as VecListIter, IterMut as VecListIterMut, VecList,
 };
 use hashbrown::hash_map::Entry as HashMapEntry;
 use hashbrown::HashMap;
@@ -10,6 +9,8 @@ use std::fmt::{self, Debug, Formatter};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::iter::{FromIterator, FusedIterator};
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
@@ -109,7 +110,8 @@ where
         match self.map.entry(hash) {
             Occupied(mut entry) => {
                 let map_entry = entry.get_mut();
-                let value_entry = ValueEntry::new(map_entry.key_index, value);
+                let mut value_entry = ValueEntry::new(map_entry.key_index, value);
+                value_entry.previous_index = Some(map_entry.tail_index);
                 let index = self.values.push_back(value_entry);
                 self.values
                     .get_mut(map_entry.tail_index)
@@ -126,6 +128,44 @@ where
                 false
             }
         }
+    }
+
+    /// Returns an immutable reference to the first key-value pair in the multimap
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    /// assert_eq!(map.back(), None);
+    ///
+    /// map.insert("key", "value");
+    /// assert_eq!(map.back(), Some((&"key", &"value")));
+    /// ```
+    pub fn back(&self) -> Option<(&Key, &Value)> {
+        self.iter().next_back()
+    }
+
+    /// Returns an immutable reference to the first key-value pair in the multimap
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    /// assert_eq!(map.back_mut(), None);
+    ///
+    /// map.insert("key", "value");
+    /// assert_eq!(map.back_mut(), Some((&"key", &mut "value")));
+    /// ```
+    pub fn back_mut(&mut self) -> Option<(&Key, &mut Value)> {
+        self.iter_mut().next_back()
     }
 
     /// Removes all keys and values from the multimap.
@@ -174,11 +214,37 @@ where
         self.map.contains_key(&self.key_hash(key))
     }
 
-    pub fn drain(&mut self) -> Drain<Key, Value, State> {
-        Drain {
-            iter: self.values.drain(),
-            keys: &mut self.keys,
+    /// Returns an iterator that yields keys and all associated values with those keys as separate
+    /// drain iterators. The order of yielded pairs will be the order in which the keys were first
+    /// inserted into the multimap.
+    ///
+    /// Regardless of whether this iterator is fully consumed, all keys and values will be removed
+    /// from the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// map.insert("key", "value1");
+    /// map.append("key", "value2");
+    ///
+    /// let mut iter = map.drain_pairs();
+    ///
+    /// let (key, mut values) = iter.next().unwrap();
+    /// assert_eq!(key, "key");
+    /// assert_eq!(values.next(), Some("value1"));
+    /// assert_eq!(values.next(), Some("value2"));
+    /// assert_eq!(values.next(), None);
+    /// ```
+    pub fn drain_pairs(&mut self) -> KeyValuesDrain<Key, Value, State> {
+        KeyValuesDrain {
+            dropped: Arc::new(AtomicUsize::new(self.keys_len())),
+            iter: self.keys.drain(),
             map: &mut self.map,
+            values: &mut self.values as *mut _,
         }
     }
 
@@ -238,6 +304,44 @@ where
             .get(&hash)
             .map(|map_entry| map_entry.length)
             .unwrap_or(0)
+    }
+
+    /// Returns an immutable reference to the first key-value pair in the multimap
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    /// assert_eq!(map.front(), None);
+    ///
+    /// map.insert("key", "value");
+    /// assert_eq!(map.front(), Some((&"key", &"value")));
+    /// ```
+    pub fn front(&self) -> Option<(&Key, &Value)> {
+        self.iter().next()
+    }
+
+    /// Returns an immutable reference to the first key-value pair in the multimap
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    /// assert_eq!(map.front_mut(), None);
+    ///
+    /// map.insert("key", "value");
+    /// assert_eq!(map.front_mut(), Some((&"key", &mut "value")));
+    /// ```
+    pub fn front_mut(&mut self) -> Option<(&Key, &mut Value)> {
+        self.iter_mut().next()
     }
 
     /// Returns an immutable reference to the first value, by insertion order, associated with the
@@ -387,7 +491,8 @@ where
     /// Inserts the key-value pair into the multimap and returns the first value, by insertion
     /// order, that was already associated with the key.
     ///
-    /// If the key is not already in the multimap, `None` will be returned.
+    /// If the key is not already in the multimap, `None` will be returned. If the key is already in
+    /// the multimap, the insertion ordering of the keys will remain unchanged.
     ///
     /// Complexity: O(1) amortized
     ///
@@ -416,7 +521,8 @@ where
     /// Inserts the key-value pair into the multimap and returns an iterator that yields all values
     /// previously associated with the key by insertion order.
     ///
-    /// If the key is not already in the multimap, the iterator will yield no values.
+    /// If the key is not already in the multimap, the iterator will yield no values.If the key is
+    /// already in the multimap, the insertion ordering of the keys will remain unchanged.
     ///
     /// Complexity: O(1) amortized
     ///
@@ -564,9 +670,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let mut hasher = self.hasher().build_hasher();
-        key.borrow().hash(&mut hasher);
-        KeyHash(hasher.finish())
+        KeyHash::new(&key.borrow(), self.hasher())
     }
 
     /// Returns an iterator that yields immutable references to all keys in the multimap by
@@ -729,8 +833,186 @@ where
         self.pack_to(self.keys_len(), self.values_len());
     }
 
+    /// Returns an iterator that yields immutable references to keys and all associated values with
+    /// those keys as separate iterators. The order of yielded pairs will be the order in which the
+    /// keys were first inserted into the multimap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// map.insert("key", "value1");
+    /// map.append("key", "value2");
+    ///
+    /// let mut iter = map.pairs();
+    ///
+    /// let (key, mut values) = iter.next().unwrap();
+    /// assert_eq!(key, &"key");
+    /// assert_eq!(values.next(), Some(&"value1"));
+    /// assert_eq!(values.next(), Some(&"value2"));
+    /// assert_eq!(values.next(), None);
+    /// ```
+    pub fn pairs(&self) -> KeyValues<Key, Value, State> {
+        KeyValues {
+            iter: self.keys.iter(),
+            map: &self.map,
+            values: &self.values,
+        }
+    }
+
+    /// Returns an iterator that yields immutable references to keys and mutable references to all
+    /// associated values with those keys as separate iterators. The order of yielded pairs will be
+    /// the order in which the keys were first inserted into the multimap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// map.insert("key", "value1");
+    /// map.append("key", "value2");
+    ///
+    /// let mut iter = map.pairs_mut();
+    ///
+    /// let (key, mut values) = iter.next().unwrap();
+    /// assert_eq!(key, &"key");
+    /// assert_eq!(values.next(), Some(&mut "value1"));
+    /// assert_eq!(values.next(), Some(&mut "value2"));
+    /// assert_eq!(values.next(), None);
+    /// ```
+    pub fn pairs_mut(&mut self) -> KeyValuesMut<Key, Value, State> {
+        KeyValuesMut {
+            iter: self.keys.iter(),
+            map: &self.map,
+            values: &mut self.values as *mut _,
+        }
+    }
+
+    /// Removes the last key-value pair to have been inserted.
+    ///
+    /// Because a single key can be associated with many values, the key returned by this function
+    /// is a [`KeyWrapper`] which can be either owned or borrowed. If the value removed was the only
+    /// value associated with the key, then the key will be returned. Otherwise, a reference to the
+    /// key will be returned.
+    ///
+    /// This function along with [`ListOrderedMultimap::pop_front`] act as replacements for a drain
+    /// iterator since an iterator cannot be done over [`KeyWrapper`].
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::KeyWrapper;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// map.insert("key", "value1");
+    /// map.append("key", "value2");
+    ///
+    /// let (key, value) = map.pop_back().unwrap();
+    /// assert_eq!(key, KeyWrapper::Borrowed(&"key"));
+    /// assert_eq!(&value, &"value2");
+    ///
+    /// let (key, value) = map.pop_back().unwrap();
+    /// assert_eq!(key, KeyWrapper::Owned("key"));
+    /// assert_eq!(&value, &"value1");
+    /// ```
+    pub fn pop_back(&mut self) -> Option<(KeyWrapper<Key>, Value)> {
+        let value_entry = self.values.pop_back()?;
+        let key = self.keys.get(value_entry.key_index).unwrap();
+        let hash = self.key_hash(key);
+        let mut entry = match self.map.entry(hash) {
+            HashMapEntry::Occupied(entry) => entry,
+            _ => panic!("expected occupied entry in internal map"),
+        };
+        let key = match value_entry.previous_index {
+            Some(previous_index) => {
+                let value_entry = self.values.get_mut(previous_index).unwrap();
+                value_entry.next_index = None;
+
+                let map_entry = entry.get_mut();
+                map_entry.length -= 1;
+                map_entry.tail_index = previous_index;
+                KeyWrapper::Borrowed(self.keys.get(value_entry.key_index).unwrap())
+            }
+            None => {
+                entry.remove();
+                KeyWrapper::Owned(self.keys.remove(value_entry.key_index).unwrap())
+            }
+        };
+
+        Some((key, value_entry.value))
+    }
+
+    /// Removes the first key-value pair to have been inserted.
+    ///
+    /// Because a single key can be associated with many values, the key returned by this function
+    /// is a [`KeyWrapper`] which can be either owned or borrowed. If the value removed was the only
+    /// value associated with the key, then the key will be returned. Otherwise, a reference to the
+    /// key will be returned.
+    ///
+    /// This function along with [`ListOrderedMultimap::pop_back`] act as replacements for a drain
+    /// iterator since an iterator cannot be done over [`KeyWrapper`].
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::KeyWrapper;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// map.insert("key", "value1");
+    /// map.append("key", "value2");
+    ///
+    /// let (key, value) = map.pop_front().unwrap();
+    /// assert_eq!(key, KeyWrapper::Borrowed(&"key"));
+    /// assert_eq!(&value, &"value1");
+    ///
+    /// let (key, value) = map.pop_front().unwrap();
+    /// assert_eq!(key, KeyWrapper::Owned("key"));
+    /// assert_eq!(&value, &"value2");
+    /// ```
+    pub fn pop_front(&mut self) -> Option<(KeyWrapper<Key>, Value)> {
+        let value_entry = self.values.pop_front()?;
+        let key = self.keys.get(value_entry.key_index).unwrap();
+        let hash = self.key_hash(key);
+        let mut entry = match self.map.entry(hash) {
+            HashMapEntry::Occupied(entry) => entry,
+            _ => panic!("expected occupied entry in internal map"),
+        };
+        let key = match value_entry.next_index {
+            Some(next_index) => {
+                let value_entry = self.values.get_mut(next_index).unwrap();
+                value_entry.previous_index = None;
+
+                let map_entry = entry.get_mut();
+                map_entry.length -= 1;
+                map_entry.head_index = next_index;
+                KeyWrapper::Borrowed(self.keys.get(value_entry.key_index).unwrap())
+            }
+            None => {
+                entry.remove();
+                KeyWrapper::Owned(self.keys.remove(value_entry.key_index).unwrap())
+            }
+        };
+
+        Some((key, value_entry.value))
+    }
+
     /// Removes all values associated with the given key from the map and returns the first value
     /// by insertion order.
+    ///
+    /// Complexity: O(1)
     ///
     /// # Examples
     ///
@@ -754,13 +1036,15 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        self.remove_all(key).next()
+        self.remove_entry(key).map(|(_, value)| value)
     }
 
     /// Removes all values associated with the given key from the map and returns an iterator that
     /// yields those values.
     ///
     /// If the key is not already in the map, the iterator will yield no values.
+    ///
+    /// Complexity: O(1)
     ///
     /// # Examples
     ///
@@ -798,6 +1082,90 @@ where
                 EntryValuesDrain::from_map_entry(&mut self.values, &map_entry)
             }
             None => EntryValuesDrain::empty(&mut self.values),
+        }
+    }
+
+    /// Removes all values associated with the given key from the map and returns the key and first
+    /// value.
+    ///
+    /// If the key is not already in the map, then `None` will be returned.
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// let entry = map.remove_entry(&"key");
+    /// assert_eq!(entry, None);
+    ///
+    /// map.insert("key", "value");
+    /// assert_eq!(map.get(&"key"), Some(&"value"));
+    ///
+    /// let entry = map.remove_entry(&"key");
+    /// assert_eq!(entry, Some(("key", "value")));
+    /// assert_eq!(map.get(&"key"), None);
+    /// ```
+    pub fn remove_entry<KeyQuery>(&mut self, key: &KeyQuery) -> Option<(Key, Value)>
+    where
+        Key: Borrow<KeyQuery>,
+        KeyQuery: ?Sized + Eq + Hash,
+    {
+        let (key, mut iter) = self.remove_entry_all(key)?;
+        Some((key, iter.next().unwrap()))
+    }
+
+    /// Removes all values associated with the given key from the map and returns the key and an
+    /// iterator that yields those values.
+    ///
+    /// If the key is not already in the map, then `None` will be returned.
+    ///
+    /// Complexity: O(1)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// {
+    ///     let entry = map.remove_entry_all(&"key");
+    ///     assert!(entry.is_none());
+    /// }
+    ///
+    /// map.insert("key", "value1");
+    /// map.append("key", "value2");
+    /// assert_eq!(map.get(&"key"), Some(&"value1"));
+    ///
+    /// {
+    ///     let (key, mut iter) = map.remove_entry_all(&"key").unwrap();
+    ///     assert_eq!(key, "key");
+    ///     assert_eq!(iter.next(), Some("value1"));
+    ///     assert_eq!(iter.next(), Some("value2"));
+    ///     assert_eq!(iter.next(), None);
+    /// }
+    ///
+    /// assert_eq!(map.get(&"key"), None);
+    /// ```
+    pub fn remove_entry_all<KeyQuery>(
+        &mut self,
+        key: &KeyQuery,
+    ) -> Option<(Key, EntryValuesDrain<Key, Value>)>
+    where
+        Key: Borrow<KeyQuery>,
+        KeyQuery: ?Sized + Eq + Hash,
+    {
+        match self.map.remove(&self.key_hash(key)) {
+            Some(map_entry) => {
+                let key = self.keys.remove(map_entry.key_index).unwrap();
+                let iter = EntryValuesDrain::from_map_entry(&mut self.values, &map_entry);
+                Some((key, iter))
+            }
+            None => None,
         }
     }
 
@@ -848,6 +1216,92 @@ where
     /// ```
     pub fn reserve_values(&mut self, additional_capacity: usize) {
         self.values.reserve(additional_capacity);
+    }
+
+    /// Keeps all key-value pairs that satisfy the given predicate function.
+    ///
+    /// Complexity: O(|V|) where |V| is the number of values
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::ListOrderedMultimap;
+    ///
+    /// let mut map = ListOrderedMultimap::new();
+    ///
+    /// map.insert("key1", 1);
+    /// map.insert("key2", 5);
+    /// map.append("key1", -1);
+    /// map.insert("key3", -10);
+    ///
+    /// map.retain(|_, &mut value| value >= 0);
+    ///
+    /// let mut iter = map.iter();
+    /// assert_eq!(iter.next(), Some((&"key1", &1)));
+    /// assert_eq!(iter.next(), Some((&"key2", &5)));
+    /// assert_eq!(iter.next(), None);
+    /// ```
+    pub fn retain<Function>(&mut self, function: Function)
+    where
+        Function: FnMut(&Key, &mut Value) -> bool,
+    {
+        ListOrderedMultimap::retain_helper(
+            &mut self.keys,
+            &mut self.map,
+            &mut self.values,
+            function,
+        );
+    }
+
+    /// Helper function for [`ListOrderedMultimap::retain`] to deal with borrowing issues.
+    fn retain_helper<'map, Function>(
+        keys: &'map mut VecList<Key>,
+        map: &'map mut HashMap<KeyHash, MapEntry<Key, Value>, State>,
+        values: &'map mut VecList<ValueEntry<Key, Value>>,
+        mut function: Function,
+    ) where
+        Function: FnMut(&Key, &mut Value) -> bool,
+    {
+        let values_ptr = values as *mut VecList<ValueEntry<Key, Value>>;
+        values.retain(|value_entry| {
+            let key = keys.get(value_entry.key_index).unwrap();
+
+            if !function(key, &mut value_entry.value) {
+                let hash = KeyHash::new(key, map.hasher());
+                let mut entry = match map.entry(hash) {
+                    HashMapEntry::Occupied(entry) => entry,
+                    _ => panic!("expected occupied entry in internal map"),
+                };
+
+                if value_entry.previous_index.is_none() && value_entry.next_index.is_none() {
+                    entry.remove();
+                    keys.remove(value_entry.key_index);
+                } else {
+                    let map_entry = entry.get_mut();
+                    map_entry.length -= 1;
+
+                    if let Some(previous_index) = value_entry.previous_index {
+                        let previous_value_entry =
+                            unsafe { (*values_ptr).get_mut(previous_index) }.unwrap();
+                        previous_value_entry.next_index = value_entry.next_index;
+                    } else {
+                        map_entry.head_index = value_entry.next_index.unwrap();
+                    }
+
+                    if let Some(next_index) = value_entry.next_index {
+                        let next_value_entry =
+                            unsafe { (*values_ptr).get_mut(next_index) }.unwrap();
+                        next_value_entry.previous_index = value_entry.previous_index;
+                    } else {
+                        map_entry.tail_index = value_entry.previous_index.unwrap();
+                    }
+                }
+
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// Returns an iterator that yields immutable references to all values in the multimap by
@@ -1111,22 +1565,6 @@ where
     }
 }
 
-impl<Key, Value, State> IntoIterator for ListOrderedMultimap<Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    type IntoIter = IntoIter<Key, Value>;
-    type Item = (Key, Value);
-
-    fn into_iter(self) -> Self::IntoIter {
-        IntoIter {
-            keys: self.keys,
-            iter: self.values.into_iter(),
-        }
-    }
-}
-
 impl<Key, Value, State> PartialEq for ListOrderedMultimap<Key, Value, State>
 where
     Key: Eq + Hash,
@@ -1147,20 +1585,120 @@ where
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct KeyHash(u64);
 
+impl KeyHash {
+    /// Convenience function to create a new key hash using the given key and hasher.
+    pub fn new<Key, State>(key: &Key, state: &State) -> KeyHash
+    where
+        Key: Eq + Hash,
+        State: BuildHasher,
+    {
+        let mut hasher = state.build_hasher();
+        key.hash(&mut hasher);
+        KeyHash(hasher.finish())
+    }
+}
+
+/// A wrapper around a key that is either borrowed or owned.
+///
+/// This type is similar to [`std::borrow::Cow`] but does not require a [`Clone`] trait bound on the
+/// key.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum KeyWrapper<'map, Key> {
+    /// An immutable reference to a key. This implies that the key is still associated to at least
+    /// one value in the multimap.
+    Borrowed(&'map Key),
+
+    /// An owned key. This will occur when a key is no longer associated with any values in the
+    /// multimap.
+    Owned(Key),
+}
+
+impl<'map, Key> KeyWrapper<'map, Key> {
+    /// If the key wrapped is owned, it is returned. Otherwise, the borrowed key is cloned and
+    /// returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::list_ordered_multimap::KeyWrapper;
+    ///
+    /// let borrowed = KeyWrapper::Borrowed(&0);
+    /// assert_eq!(borrowed.into_owned(), 0);
+    ///
+    /// let owned = KeyWrapper::Owned(0);
+    /// assert_eq!(borrowed.into_owned(), 0);
+    /// ```
+    pub fn into_owned(self) -> Key
+    where
+        Key: Clone,
+    {
+        use self::KeyWrapper::*;
+
+        match self {
+            Borrowed(key) => key.clone(),
+            Owned(key) => key,
+        }
+    }
+
+    /// Returns whether the wrapped key is borrowed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::list_ordered_multimap::KeyWrapper;
+    ///
+    /// let borrowed = KeyWrapper::Borrowed(&0);
+    /// assert!(borrowed.is_borrowed());
+    ///
+    /// let owned = KeyWrapper::Owned(0);
+    /// assert!(!owned.is_borrowed());
+    /// ```
+    pub fn is_borrowed(&self) -> bool {
+        match self {
+            KeyWrapper::Borrowed(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Returns whether the wrapped key is owned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ordered_multimap::list_ordered_multimap::KeyWrapper;
+    ///
+    /// let borrowed = KeyWrapper::Borrowed(&0);
+    /// assert!(!borrowed.is_owned());
+    ///
+    /// let owned = KeyWrapper::Owned(0);
+    /// assert!(owned.is_owned());
+    /// ```
+    pub fn is_owned(&self) -> bool {
+        match self {
+            KeyWrapper::Owned(_) => true,
+            _ => false,
+        }
+    }
+}
+
 /// The value type of the internal hash map.
 #[derive(Clone)]
 struct MapEntry<Key, Value> {
+    /// The index of the first value for this entry.
     head_index: Index<ValueEntry<Key, Value>>,
 
     /// The index of the key in the key list for this entry.
     key_index: Index<Key>,
 
+    /// The number of values for this entry.
     length: usize,
 
+    /// The index of the last value for this entry.
     tail_index: Index<ValueEntry<Key, Value>>,
 }
 
 impl<Key, Value> MapEntry<Key, Value> {
+    /// Convenience function for adding a new value to the entry.
     pub fn append(&mut self, index: Index<ValueEntry<Key, Value>>) {
         self.length += 1;
         self.tail_index = index;
@@ -1176,6 +1714,7 @@ impl<Key, Value> MapEntry<Key, Value> {
         }
     }
 
+    /// Convenience function for resetting the entry to contain only one value.
     pub fn reset(&mut self, index: Index<ValueEntry<Key, Value>>) {
         self.head_index = index;
         self.length = 1;
@@ -1189,8 +1728,10 @@ struct ValueEntry<Key, Value> {
     /// The index of the key in the key list for this entry.
     key_index: Index<Key>,
 
+    /// The index of the next value with the same key.
     next_index: Option<Index<ValueEntry<Key, Value>>>,
 
+    /// The index of the previous value with the same key.
     previous_index: Option<Index<ValueEntry<Key, Value>>>,
 
     /// The actual value stored in this entry.
@@ -1222,6 +1763,9 @@ impl<'map, Key, Value, State> Entry<'map, Key, Value, State>
 where
     State: BuildHasher,
 {
+    /// Calls the given function with a mutable reference to the first value of this entry, by
+    /// insertion order, if it is vacant, otherwise this function is a no-op.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1254,6 +1798,10 @@ where
         }
     }
 
+    /// If the entry is vacant, the given value will be inserted into it and a mutable reference to
+    /// that value will be returned. Otherwise, a mutable reference to the first value, by insertion
+    /// order, will be returned.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1277,6 +1825,9 @@ where
         }
     }
 
+    /// If the entry is vacant, the given value will be inserted into it and the new occupied entry
+    /// will be returned. Otherwise, the existing occupied entry will be returned.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1300,6 +1851,10 @@ where
         }
     }
 
+    /// If the entry is vacant, the value returned from the given function will be inserted into it
+    /// and a mutable reference to that value will be returned. Otherwise, a mutable reference to
+    /// the first value, by insertion order, will be returned.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1326,6 +1881,10 @@ where
         }
     }
 
+    /// If the entry is vacant, the value returned from the given function will be inserted into it
+    /// and the new occupied entry will be returned. Otherwise, the existing occupied entry will be
+    /// returned.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1356,6 +1915,22 @@ where
     }
 }
 
+impl<'map, Key, Value, State> Debug for Entry<'map, Key, Value, State>
+where
+    Key: Debug,
+    State: BuildHasher,
+    Value: Debug,
+{
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        use self::Entry::*;
+
+        match self {
+            Occupied(entry) => entry.fmt(formatter),
+            Vacant(entry) => entry.fmt(formatter),
+        }
+    }
+}
+
 /// A view into an occupied entry in the multimap.
 pub struct OccupiedEntry<'map, Key, Value, State = RandomState> {
     /// The hash of the key for the entry.
@@ -1372,7 +1947,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1391,7 +1967,8 @@ where
     /// ```
     pub fn append(&mut self, value: Value) {
         let map_entry = self.map.map.get_mut(&self.hash).unwrap();
-        let value_entry = ValueEntry::new(map_entry.key_index, value);
+        let mut value_entry = ValueEntry::new(map_entry.key_index, value);
+        value_entry.previous_index = Some(map_entry.tail_index);
         let index = self.map.values.push_back(value_entry);
         self.map
             .values
@@ -1405,7 +1982,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value");
@@ -1425,7 +2003,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value");
@@ -1445,7 +2024,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1480,7 +2060,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1509,7 +2090,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value");
@@ -1529,7 +2111,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1554,7 +2137,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1579,7 +2163,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1599,7 +2184,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1621,7 +2207,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value");
@@ -1650,7 +2237,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1674,7 +2262,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value");
@@ -1703,7 +2292,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     /// map.insert("key", "value1");
@@ -1744,7 +2334,7 @@ where
         formatter
             .debug_struct("OccupiedEntry")
             .field("key", self.key())
-            .field("value", self.get())
+            .field("values", &self.iter())
             .finish()
     }
 }
@@ -1768,7 +2358,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     ///
@@ -1791,7 +2382,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map = ListOrderedMultimap::new();
     ///
@@ -1819,7 +2411,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
     ///
@@ -1837,7 +2430,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use ordered_multimap::{Entry, ListOrderedMultimap};
+    /// use ordered_multimap::ListOrderedMultimap;
+    /// use ordered_multimap::list_ordered_multimap::Entry;
     ///
     /// let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
     ///
@@ -1865,102 +2459,16 @@ where
     }
 }
 
-pub struct Drain<'map, Key, Value, State = RandomState>
-where
-    State: BuildHasher,
-{
-    iter: VecListDrain<'map, ValueEntry<Key, Value>>,
-
-    keys: &'map mut VecList<Key>,
-
-    map: &'map mut HashMap<KeyHash, MapEntry<Key, Value>, State>,
-}
-
-impl<Key, Value, State> Drain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    fn key_hash(&self, key: &Key) -> KeyHash {
-        let mut hasher = self.map.hasher().build_hasher();
-        key.hash(&mut hasher);
-        KeyHash(hasher.finish())
-    }
-
-    pub fn iter(&self) -> Iter<Key, Value> {
-        Iter {
-            keys: &self.keys,
-            iter: self.iter.iter(),
-        }
-    }
-}
-
-impl<Key, Value, State> Debug for Drain<'_, Key, Value, State>
-where
-    Key: Debug + Eq + Hash,
-    State: BuildHasher,
-    Value: Debug,
-{
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        formatter.write_str("Drain(")?;
-        formatter.debug_list().entries(self.iter()).finish()?;
-        formatter.write_str(")")
-    }
-}
-
-impl<Key, Value, State> DoubleEndedIterator for Drain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let value_entry = self.iter.next_back()?;
-        let key = self.keys.remove(value_entry.key_index).unwrap();
-        let hash = self.key_hash(&key);
-        self.map.remove(&hash);
-        Some((key, value_entry.value))
-    }
-}
-
-impl<Key, Value, State> ExactSizeIterator for Drain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{}
-
-impl<Key, Value, State> FusedIterator for Drain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{}
-
-impl<Key, Value, State> Iterator for Drain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    type Item = (Key, Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let value_entry = self.iter.next()?;
-        let key = self.keys.remove(value_entry.key_index).unwrap();
-        let hash = self.key_hash(&key);
-        self.map.remove(&hash);
-        Some((key, value_entry.value))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
 /// An iterator that yields immutable references to all values of a given key. The order of the
 /// values is always in the order that they were inserted.
 pub struct EntryValues<'map, Key, Value> {
+    /// The first index of the values not yet yielded.
     head_index: Option<Index<ValueEntry<Key, Value>>>,
 
+    /// The remaining number of values to be yielded.
     remaining: usize,
 
+    /// The last index of the values not yet yielded.
     tail_index: Option<Index<ValueEntry<Key, Value>>>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
@@ -1968,6 +2476,7 @@ pub struct EntryValues<'map, Key, Value> {
 }
 
 impl<'map, Key, Value> EntryValues<'map, Key, Value> {
+    /// Convenience function for creating an empty iterator.
     fn empty(values: &'map VecList<ValueEntry<Key, Value>>) -> Self {
         EntryValues {
             head_index: None,
@@ -1977,6 +2486,7 @@ impl<'map, Key, Value> EntryValues<'map, Key, Value> {
         }
     }
 
+    /// Convenience function for creating a new iterator from a map entry.
     fn from_map_entry(
         values: &'map VecList<ValueEntry<Key, Value>>,
         map_entry: &MapEntry<Key, Value>,
@@ -2017,7 +2527,7 @@ impl<Key, Value> DoubleEndedIterator for EntryValues<'_, Key, Value> {
         if self.remaining == 0 {
             None
         } else {
-            self.head_index.map(|index| {
+            self.tail_index.map(|index| {
                 let entry = self.values.get(index).unwrap();
                 self.tail_index = entry.previous_index;
                 self.remaining -= 1;
@@ -2053,12 +2563,15 @@ impl<'map, Key, Value> Iterator for EntryValues<'map, Key, Value> {
 }
 
 /// An iterator that moves all values of a given key out of a multimap but preserves the underlying
-/// vector. The order of the values is always in the order that they were inserted.
+/// capacity. The order of the values is always in the order that they were inserted.
 pub struct EntryValuesDrain<'map, Key, Value> {
+    /// The first index of the values not yet yielded.
     head_index: Option<Index<ValueEntry<Key, Value>>>,
 
+    /// The remaining number of values to be yielded.
     remaining: usize,
 
+    /// The last index of the values not yet yielded.
     tail_index: Option<Index<ValueEntry<Key, Value>>>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
@@ -2066,6 +2579,7 @@ pub struct EntryValuesDrain<'map, Key, Value> {
 }
 
 impl<'map, Key, Value> EntryValuesDrain<'map, Key, Value> {
+    /// Convenience function for creating an empty iterator.
     fn empty(values: &'map mut VecList<ValueEntry<Key, Value>>) -> Self {
         EntryValuesDrain {
             head_index: None,
@@ -2075,6 +2589,7 @@ impl<'map, Key, Value> EntryValuesDrain<'map, Key, Value> {
         }
     }
 
+    /// Convenience function for creating a new iterator from a map entry.
     fn from_map_entry(
         values: &'map mut VecList<ValueEntry<Key, Value>>,
         map_entry: &MapEntry<Key, Value>,
@@ -2115,7 +2630,7 @@ impl<Key, Value> DoubleEndedIterator for EntryValuesDrain<'_, Key, Value> {
         if self.remaining == 0 {
             None
         } else {
-            self.head_index.map(|index| {
+            self.tail_index.map(|index| {
                 let entry = self.values.remove(index).unwrap();
                 self.tail_index = entry.previous_index;
                 self.remaining -= 1;
@@ -2150,17 +2665,26 @@ impl<Key, Value> Iterator for EntryValuesDrain<'_, Key, Value> {
             })
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
 }
 
 /// An iterator that yields mutable references to all values of a given key. The order of the values
 /// is always in the order that they were inserted.
 pub struct EntryValuesMut<'map, Key, Value> {
+    /// The first index of the values not yet yielded.
     head_index: Option<Index<ValueEntry<Key, Value>>>,
 
+    /// Because [`EntryValuesMut::values`] is a pointer, we need to have a phantom data here for the
+    /// lifetime parameter.
     phantom: PhantomData<&'map mut VecList<ValueEntry<Key, Value>>>,
 
+    /// The remaining number of values to be yielded.
     remaining: usize,
 
+    /// The last index of the values not yet yielded.
     tail_index: Option<Index<ValueEntry<Key, Value>>>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
@@ -2168,6 +2692,7 @@ pub struct EntryValuesMut<'map, Key, Value> {
 }
 
 impl<'map, Key, Value> EntryValuesMut<'map, Key, Value> {
+    /// Convenience function for creating an empty iterator.
     fn empty(values: &'map mut VecList<ValueEntry<Key, Value>>) -> Self {
         EntryValuesMut {
             head_index: None,
@@ -2178,6 +2703,7 @@ impl<'map, Key, Value> EntryValuesMut<'map, Key, Value> {
         }
     }
 
+    /// Convenience function for creating a new iterator from a map entry.
     fn from_map_entry(
         values: &'map mut VecList<ValueEntry<Key, Value>>,
         map_entry: &MapEntry<Key, Value>,
@@ -2218,7 +2744,7 @@ impl<Key, Value> DoubleEndedIterator for EntryValuesMut<'_, Key, Value> {
         if self.remaining == 0 {
             None
         } else {
-            self.head_index.map(|index| {
+            self.tail_index.map(|index| {
                 let entry = unsafe { (*self.values).get_mut(index) }.unwrap();
                 self.tail_index = entry.previous_index;
                 self.remaining -= 1;
@@ -2253,60 +2779,17 @@ impl<'map, Key, Value> Iterator for EntryValuesMut<'map, Key, Value> {
     }
 }
 
-pub struct IntoIter<Key, Value> {
-    /// The list of the keys in the map. This is ordered by time of insertion.
-    keys: VecList<Key>,
-
-    /// The iterator over the list of all value entries.
-    iter: VecListIntoIter<ValueEntry<Key, Value>>,
-}
-
-impl<Key, Value> IntoIter<Key, Value> {
-    pub fn iter(&self) -> Iter<Key, Value> {
-        Iter {
-            keys: &self.keys,
-            iter: self.iter.iter(),
-        }
-    }
-}
-
-impl<Key, Value> Debug for IntoIter<Key, Value>
+unsafe impl<Key, Value> Send for EntryValuesMut<'_, Key, Value>
 where
-    Key: Debug,
-    Value: Debug,
-{
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        formatter.write_str("IntoIter(")?;
-        formatter.debug_list().entries(self.iter()).finish()?;
-        formatter.write_str(")")
-    }
-}
+    Key: Send,
+    Value: Send,
+{}
 
-impl<Key, Value> DoubleEndedIterator for IntoIter<Key, Value> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let value_entry = self.iter.next_back()?;
-        let key = self.keys.remove(value_entry.key_index).unwrap();
-        Some((key, value_entry.value))
-    }
-}
-
-impl<Key, Value> ExactSizeIterator for IntoIter<Key, Value> {}
-
-impl<Key, Value> FusedIterator for IntoIter<Key, Value> {}
-
-impl<Key, Value> Iterator for IntoIter<Key, Value> {
-    type Item = (Key, Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let value_entry = self.iter.next()?;
-        let key = self.keys.remove(value_entry.key_index).unwrap();
-        Some((key, value_entry.value))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
+unsafe impl<Key, Value> Sync for EntryValuesMut<'_, Key, Value>
+where
+    Key: Sync,
+    Value: Sync,
+{}
 
 /// An iterator that yields immutable references to all key-value pairs in a multimap. The order of
 /// the yielded items is always in the order that they were inserted.
@@ -2376,6 +2859,7 @@ pub struct IterMut<'map, Key, Value> {
 }
 
 impl<Key, Value> IterMut<'_, Key, Value> {
+    /// Creates an iterator that yields immutable references to all key-value pairs in a multimap.
     pub fn iter(&self) -> Iter<Key, Value> {
         Iter {
             keys: self.keys,
@@ -2422,8 +2906,421 @@ impl<'map, Key, Value> Iterator for IterMut<'map, Key, Value> {
     }
 }
 
-/// An iterator that yields mutable references to values of a given key. The order of the keys is
-/// always in the order that they were first inserted.
+/// An iterator that yields immutable references to all keys and their value iterators. The order of
+/// the yielded items is always in the order the keys were first inserted.
+pub struct KeyValues<'map, Key, Value, State = RandomState> {
+    /// The iterator over the list of all values. This is ordered by time of insertion.
+    iter: VecListIter<'map, Key>,
+
+    /// The internal mapping from key hashes to associated value indices.
+    map: &'map HashMap<KeyHash, MapEntry<Key, Value>, State>,
+
+    /// The list of the values in the map. This is ordered by time of insertion.
+    values: &'map VecList<ValueEntry<Key, Value>>,
+}
+
+impl<'map, Key, Value, State> Clone for KeyValues<'map, Key, Value, State> {
+    fn clone(&self) -> KeyValues<'map, Key, Value, State> {
+        KeyValues {
+            iter: self.iter.clone(),
+            map: self.map,
+            values: self.values,
+        }
+    }
+}
+
+impl<Key, Value, State> Debug for KeyValues<'_, Key, Value, State>
+where
+    Key: Debug + Eq + Hash,
+    State: BuildHasher,
+    Value: Debug,
+{
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.write_str("KeyValues(")?;
+        formatter.debug_list().entries(self.clone()).finish()?;
+        formatter.write_str(")")
+    }
+}
+
+impl<Key, Value, State> DoubleEndedIterator for KeyValues<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let key = self.iter.next_back()?;
+        let hash = KeyHash::new(&key, self.map.hasher());
+        let map_entry = self.map.get(&hash).unwrap();
+        let iter = EntryValues::from_map_entry(&self.values, &map_entry);
+        Some((key, iter))
+    }
+}
+
+impl<Key, Value, State> ExactSizeIterator for KeyValues<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{}
+
+impl<Key, Value, State> FusedIterator for KeyValues<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{}
+
+impl<'map, Key, Value, State> Iterator for KeyValues<'map, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    type Item = (&'map Key, EntryValues<'map, Key, Value>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let key = self.iter.next()?;
+        let hash = KeyHash::new(&key, self.map.hasher());
+        let map_entry = self.map.get(&hash).unwrap();
+        let iter = EntryValues::from_map_entry(&self.values, &map_entry);
+        Some((key, iter))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+/// An iterator that drains the multimap of all keys and their value drain iterators. The order of
+/// the yielded items is always in the order the keys were first inserted.
+pub struct KeyValuesDrain<'map, Key, Value, State = RandomState>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    /// The number of keys whose value drain iterators have yet to have been fully consumed. This is
+    /// needed to make this type thread-safe.
+    dropped: Arc<AtomicUsize>,
+
+    /// The drain iterator over the list of all values. This is ordered by time of insertion.
+    iter: VecListDrain<'map, Key>,
+
+    /// The internal mapping from key hashes to associated value indices.
+    map: &'map mut HashMap<KeyHash, MapEntry<Key, Value>, State>,
+
+    /// The list of the values in the map. This is ordered by time of insertion.
+    values: *mut VecList<ValueEntry<Key, Value>>,
+}
+
+impl<Key, Value, State> KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    /// Creates an iterator that yields immutable references to all keys and their value iterators.
+    pub fn iter(&self) -> KeyValues<Key, Value, State> {
+        KeyValues {
+            iter: self.iter.iter(),
+            map: self.map,
+            values: unsafe { &*self.values },
+        }
+    }
+}
+
+impl<Key, Value, State> Debug for KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Debug + Eq + Hash,
+    State: BuildHasher,
+    Value: Debug,
+{
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.write_str("KeyValuesDrain(")?;
+        formatter.debug_list().entries(self.iter()).finish()?;
+        formatter.write_str(")")
+    }
+}
+
+impl<Key, Value, State> DoubleEndedIterator for KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let key = self.iter.next_back()?;
+        let hash = KeyHash::new(&key, self.map.hasher());
+        let map_entry = self.map.remove(&hash).unwrap();
+        let iter = KeyValuesEntryDrain::from_map_entry(
+            unsafe { &mut *self.values },
+            &map_entry,
+            self.dropped.clone(),
+        );
+        Some((key, iter))
+    }
+}
+
+impl<Key, Value, State> Drop for KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    fn drop(&mut self) {
+        for _ in self {}
+    }
+}
+
+impl<Key, Value, State> ExactSizeIterator for KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{}
+
+impl<Key, Value, State> FusedIterator for KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{}
+
+impl<'map, Key, Value, State> Iterator for KeyValuesDrain<'map, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    type Item = (Key, KeyValuesEntryDrain<'map, Key, Value>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let key = self.iter.next()?;
+        let hash = KeyHash::new(&key, self.map.hasher());
+        let map_entry = self.map.remove(&hash).unwrap();
+        let iter = KeyValuesEntryDrain::from_map_entry(
+            unsafe { &mut *self.values },
+            &map_entry,
+            self.dropped.clone(),
+        );
+        Some((key, iter))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+unsafe impl<Key, Value, State> Send for KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Eq + Hash + Send,
+    State: BuildHasher,
+    Value: Send,
+{}
+
+unsafe impl<Key, Value, State> Sync for KeyValuesDrain<'_, Key, Value, State>
+where
+    Key: Eq + Hash + Sync,
+    State: BuildHasher,
+    Value: Sync,
+{}
+
+/// An iterator that drains all values for a given key. The order of the yielded items is always in
+/// the order the values were first inserted.
+///
+/// This is only used with [`KeyValuesDrain`] to account for thread saftey.
+pub struct KeyValuesEntryDrain<'map, Key, Value> {
+    /// The number of keys whose value drain iterators have yet to have been fully consumed. This is
+    /// needed to make this type thread-safe. This originates from [`KeyValuesDrain`].
+    dropped: Arc<AtomicUsize>,
+    /// The first index of the values not yet yielded.
+    head_index: Option<Index<ValueEntry<Key, Value>>>,
+
+    /// The remaining number of values to be yielded.
+    remaining: usize,
+
+    /// The last index of the values not yet yielded.
+    tail_index: Option<Index<ValueEntry<Key, Value>>>,
+
+    /// The list of the values in the map. This is ordered by time of insertion.
+    values: &'map mut VecList<ValueEntry<Key, Value>>,
+}
+
+impl<'map, Key, Value> KeyValuesEntryDrain<'map, Key, Value> {
+    /// Convenience function for creating a new iterator from a map entry.
+    fn from_map_entry(
+        values: &'map mut VecList<ValueEntry<Key, Value>>,
+        map_entry: &MapEntry<Key, Value>,
+        dropped: Arc<AtomicUsize>,
+    ) -> Self {
+        KeyValuesEntryDrain {
+            dropped,
+            head_index: Some(map_entry.head_index),
+            remaining: map_entry.length,
+            tail_index: Some(map_entry.tail_index),
+            values,
+        }
+    }
+
+    /// Creates an iterator that yields immutable references to all values of a key.
+    pub fn iter(&self) -> EntryValues<Key, Value> {
+        EntryValues {
+            head_index: self.head_index,
+            remaining: self.remaining,
+            tail_index: self.tail_index,
+            values: self.values,
+        }
+    }
+}
+
+impl<Key, Value> Debug for KeyValuesEntryDrain<'_, Key, Value>
+where
+    Key: Debug,
+    Value: Debug,
+{
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.write_str("KeyValuesEntryDrain(")?;
+        formatter.debug_list().entries(self.iter()).finish()?;
+        formatter.write_str(")")
+    }
+}
+
+impl<Key, Value> DoubleEndedIterator for KeyValuesEntryDrain<'_, Key, Value> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            None
+        } else {
+            self.tail_index.map(|index| {
+                let entry = unsafe { self.values.remove_sync(index) };
+                self.tail_index = entry.previous_index;
+                self.remaining -= 1;
+                entry.value
+            })
+        }
+    }
+}
+
+impl<Key, Value> Drop for KeyValuesEntryDrain<'_, Key, Value> {
+    fn drop(&mut self) {
+        while let Some(_) = self.next() {}
+
+        let previous = self.dropped.fetch_sub(1, Ordering::SeqCst);
+
+        if previous == 1 {
+            self.values.clear()
+        }
+    }
+}
+
+impl<Key, Value> ExactSizeIterator for KeyValuesEntryDrain<'_, Key, Value> {}
+
+impl<Key, Value> FusedIterator for KeyValuesEntryDrain<'_, Key, Value> {}
+
+impl<Key, Value> Iterator for KeyValuesEntryDrain<'_, Key, Value> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            None
+        } else {
+            self.head_index.map(|index| {
+                let entry = unsafe { self.values.remove_sync(index) };
+                self.head_index = entry.next_index;
+                self.remaining -= 1;
+                entry.value
+            })
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
+    iter: VecListIter<'map, Key>,
+
+    map: &'map HashMap<KeyHash, MapEntry<Key, Value>, State>,
+
+    values: *mut VecList<ValueEntry<Key, Value>>,
+}
+
+impl<Key, Value, State> KeyValuesMut<'_, Key, Value, State> {
+    /// Creates an iterator that yields mutable references to all key-value pairs of a multimap.
+    pub fn iter(&self) -> KeyValues<Key, Value, State> {
+        KeyValues {
+            iter: self.iter.clone(),
+            map: self.map,
+            values: unsafe { &*self.values },
+        }
+    }
+}
+
+impl<Key, Value, State> Debug for KeyValuesMut<'_, Key, Value, State>
+where
+    Key: Debug + Eq + Hash,
+    State: BuildHasher,
+    Value: Debug,
+{
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.write_str("KeyValuesMut(")?;
+        formatter.debug_list().entries(self.iter()).finish()?;
+        formatter.write_str(")")
+    }
+}
+
+impl<Key, Value, State> DoubleEndedIterator for KeyValuesMut<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let key = self.iter.next_back()?;
+        let hash = KeyHash::new(&key, self.map.hasher());
+        let map_entry = self.map.get(&hash).unwrap();
+        let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, &map_entry);
+        Some((key, iter))
+    }
+}
+
+impl<Key, Value, State> ExactSizeIterator for KeyValuesMut<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{}
+
+impl<Key, Value, State> FusedIterator for KeyValuesMut<'_, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{}
+
+impl<'map, Key, Value, State> Iterator for KeyValuesMut<'map, Key, Value, State>
+where
+    Key: Eq + Hash,
+    State: BuildHasher,
+{
+    type Item = (&'map Key, EntryValuesMut<'map, Key, Value>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let key = self.iter.next()?;
+        let hash = KeyHash::new(&key, self.map.hasher());
+        let map_entry = self.map.get(&hash).unwrap();
+        let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, &map_entry);
+        Some((key, iter))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+unsafe impl<Key, Value> Send for KeyValuesMut<'_, Key, Value>
+where
+    Key: Send,
+    Value: Send,
+{
+}
+
+unsafe impl<Key, Value> Sync for KeyValuesMut<'_, Key, Value>
+where
+    Key: Sync,
+    Value: Sync,
+{
+}
+
+/// An iterator that yields immutable references to all keys in the multimap. The order of the keys
+/// is always in the order that they were first inserted.
 pub struct Keys<'map, Key>(VecListIter<'map, Key>);
 
 impl<'map, Key> Clone for Keys<'map, Key> {
@@ -2526,10 +3423,9 @@ where
     Value: Debug,
 {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        formatter
-            .debug_tuple("ValuesMut")
-            .field(&self.iter())
-            .finish()
+        formatter.write_str("ValuesMut(")?;
+        formatter.debug_list().entries(self.iter()).finish()?;
+        formatter.write_str(")")
     }
 }
 
@@ -2563,9 +3459,857 @@ mod test {
     fn test_bounds() {
         fn check_bounds<Type: Send + Sync>() {}
 
+        check_bounds::<Entry<'static, (), ()>>();
+        check_bounds::<EntryValues<'static, (), ()>>();
+        check_bounds::<EntryValuesDrain<'static, (), ()>>();
+        check_bounds::<EntryValuesMut<'static, (), ()>>();
+        check_bounds::<Iter<'static, (), ()>>();
+        check_bounds::<IterMut<'static, (), ()>>();
+        check_bounds::<KeyValues<'static, (), ()>>();
+        check_bounds::<KeyValuesDrain<'static, (), ()>>();
+        check_bounds::<KeyValuesEntryDrain<'static, (), ()>>();
+        check_bounds::<KeyValuesMut<'static, (), ()>>();
         check_bounds::<ListOrderedMultimap<(), ()>>();
         check_bounds::<OccupiedEntry<'static, (), ()>>();
         check_bounds::<VacantEntry<'static, (), ()>>();
+        check_bounds::<Values<'static, (), ()>>();
+        check_bounds::<ValuesMut<'static, (), ()>>();
+    }
+
+    #[test]
+    fn test_entry_and_modify() {
+        let mut map = ListOrderedMultimap::new();
+        map.entry("key")
+            .and_modify(|_| panic!("entry should be vacant"));
+
+        map.insert("key", "value1");
+        map.entry("key").and_modify(|value| *value = "value2");
+        assert_eq!(map.get(&"key"), Some(&"value2"));
+    }
+
+    #[test]
+    fn test_entry_or_insert() {
+        let mut map = ListOrderedMultimap::new();
+        let value = map.entry("key").or_insert("value1");
+        assert_eq!(value, &"value1");
+
+        let value = map.entry("key").or_insert("value2");
+        assert_eq!(value, &"value1");
+    }
+
+    #[test]
+    fn test_entry_or_insert_entry() {
+        let mut map = ListOrderedMultimap::new();
+        let entry = map.entry("key").or_insert_entry("value1");
+        assert_eq!(entry.get(), &"value1");
+
+        let entry = map.entry("key").or_insert_entry("value2");
+        assert_eq!(entry.get(), &"value1");
+    }
+
+    #[test]
+    fn test_entry_or_insert_with() {
+        let mut map = ListOrderedMultimap::new();
+        let value = map.entry("key").or_insert_with(|| "value1");
+        assert_eq!(value, &"value1");
+
+        let value = map.entry("key").or_insert_with(|| "value2");
+        assert_eq!(value, &"value1");
+    }
+
+    #[test]
+    fn test_entry_or_insert_with_entry() {
+        let mut map = ListOrderedMultimap::new();
+        let entry = map.entry("key").or_insert_with_entry(|| "value1");
+        assert_eq!(entry.get(), &"value1");
+
+        let entry = map.entry("key").or_insert_with_entry(|| "value2");
+        assert_eq!(entry.get(), &"value1");
+    }
+
+    #[test]
+    fn test_entry_values_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let iter = map.get_all(&"key");
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"EntryValues(["value1", "value2", "value3", "value4"])"#
+        );
+    }
+
+    #[test]
+    fn test_entry_values_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.remove_all(&"key");
+        assert_eq!(iter.next(), Some("value1"));
+        assert_eq!(iter.next_back(), Some("value4"));
+        assert_eq!(iter.next(), Some("value2"));
+        assert_eq!(iter.next_back(), Some("value3"));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_drain_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let iter = map.remove_all(&"key");
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"EntryValuesDrain(["value1", "value2", "value3", "value4"])"#
+        );
+    }
+
+    #[test]
+    fn test_entry_values_drain_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.remove_all(&"key");
+        assert_eq!(iter.next(), Some("value1"));
+        assert_eq!(iter.next_back(), Some("value4"));
+        assert_eq!(iter.next(), Some("value2"));
+        assert_eq!(iter.next_back(), Some("value3"));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_drain_empty() {
+        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.remove_all(&"key");
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_drain_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.remove_all(&"key");
+        assert_eq!(iter.next(), Some("value"));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_drain_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.remove_all(&"key");
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_entry_values_empty() {
+        let map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.get_all(&"key");
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.get_all(&"key");
+        assert_eq!(iter.next(), Some(&"value"));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_mut_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let iter = map.get_all_mut(&"key");
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"EntryValuesMut(["value1", "value2", "value3", "value4"])"#
+        );
+    }
+
+    #[test]
+    fn test_entry_values_mut_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.get_all_mut(&"key");
+        assert_eq!(iter.next(), Some(&mut "value1"));
+        assert_eq!(iter.next_back(), Some(&mut "value4"));
+        assert_eq!(iter.next(), Some(&mut "value2"));
+        assert_eq!(iter.next_back(), Some(&mut "value3"));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_mut_empty() {
+        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.get_all_mut(&"key");
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_mut_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.get_all_mut(&"key");
+        assert_eq!(iter.next(), Some(&mut "value"));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_entry_values_mut_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.get_all_mut(&"key");
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_entry_values_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.get_all(&"key");
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_iter_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.iter();
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"Iter([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
+        );
+    }
+
+    #[test]
+    fn test_iter_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.iter();
+        assert_eq!(iter.next(), Some((&"key1", &"value1")));
+        assert_eq!(iter.next_back(), Some((&"key1", &"value4")));
+        assert_eq!(iter.next(), Some((&"key2", &"value2")));
+        assert_eq!(iter.next_back(), Some((&"key2", &"value3")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_iter_empty() {
+        let map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.iter();
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_iter_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.iter();
+        assert_eq!(iter.next(), Some((&"key", &"value")));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_iter_mut_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.iter_mut();
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"IterMut([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
+        );
+    }
+
+    #[test]
+    fn test_iter_mut_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.iter_mut();
+        assert_eq!(iter.next(), Some((&"key1", &mut "value1")));
+        assert_eq!(iter.next_back(), Some((&"key1", &mut "value4")));
+        assert_eq!(iter.next(), Some((&"key2", &mut "value2")));
+        assert_eq!(iter.next_back(), Some((&"key2", &mut "value3")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_iter_mut_empty() {
+        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.iter_mut();
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_iter_mut_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.iter_mut();
+        assert_eq!(iter.next(), Some((&"key", &mut "value")));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_iter_mut_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.iter_mut();
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_iter_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.iter();
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_key_values_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.pairs();
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"KeyValues([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+        );
+    }
+
+    #[test]
+    fn test_key_values_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.pairs();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key1");
+        assert_eq!(values.next(), Some(&"value1"));
+        assert_eq!(values.next(), Some(&"value4"));
+        assert_eq!(values.next(), None);
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key2");
+        assert_eq!(values.next(), Some(&"value2"));
+        assert_eq!(values.next(), Some(&"value3"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_drain_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.drain_pairs();
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"KeyValuesDrain([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+        );
+    }
+
+    #[test]
+    fn test_key_values_drain_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.drain_pairs();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, "key1");
+        assert_eq!(values.next(), Some("value1"));
+        assert_eq!(values.next(), Some("value4"));
+        assert_eq!(values.next(), None);
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, "key2");
+        assert_eq!(values.next(), Some("value2"));
+        assert_eq!(values.next(), Some("value3"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_drain_empty() {
+        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.drain_pairs();
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_drain_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.drain_pairs();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, "key");
+        assert_eq!(values.next(), Some("value"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_drain_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.drain_pairs();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_key_values_empty() {
+        let map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.pairs();
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_entry_drain_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.drain_pairs();
+        let (_, values) = iter.next().unwrap();
+
+        assert_eq!(
+            format!("{:?}", values),
+            r#"KeyValuesEntryDrain(["value1", "value2", "value3", "value4"])"#
+        );
+    }
+
+    #[test]
+    fn test_key_values_entry_drain_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let mut iter = map.drain_pairs();
+        let (_, mut values) = iter.next().unwrap();
+        assert_eq!(values.next(), Some("value1"));
+        assert_eq!(values.next_back(), Some("value4"));
+        assert_eq!(values.next(), Some("value2"));
+        assert_eq!(values.next_back(), Some("value3"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_entry_drain_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.drain_pairs();
+        let (_, mut values) = iter.next().unwrap();
+        assert_eq!(values.next(), Some("value"));
+        assert_eq!(values.next(), None);
+        assert_eq!(values.next_back(), None);
+        assert_eq!(values.next(), None);
+        assert_eq!(values.next_back(), None);
+    }
+
+    #[test]
+    fn test_key_values_entry_drain_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.drain_pairs();
+        let (_, mut values) = iter.next().unwrap();
+        assert_eq!(values.size_hint(), (2, Some(2)));
+        values.next();
+        assert_eq!(values.size_hint(), (1, Some(1)));
+        values.next();
+        assert_eq!(values.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_key_values_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.pairs();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key");
+        assert_eq!(values.next(), Some(&"value"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_mut_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.pairs_mut();
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"KeyValuesMut([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+        );
+    }
+
+    #[test]
+    fn test_key_values_mut_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.pairs_mut();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key1");
+        assert_eq!(values.next(), Some(&mut "value1"));
+        assert_eq!(values.next(), Some(&mut "value4"));
+        assert_eq!(values.next(), None);
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key2");
+        assert_eq!(values.next(), Some(&mut "value2"));
+        assert_eq!(values.next(), Some(&mut "value3"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_mut_empty() {
+        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.pairs_mut();
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_mut_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.pairs_mut();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key");
+        assert_eq!(values.next(), Some(&mut "value"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_key_values_mut_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.pairs_mut();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_key_values_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.pairs();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_keys_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.keys();
+        assert_eq!(format!("{:?}", iter), r#"Keys(["key1", "key2"])"#);
+    }
+
+    #[test]
+    fn test_keys_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.keys();
+        assert_eq!(iter.next(), Some(&"key1"));
+        assert_eq!(iter.next_back(), Some(&"key2"));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_keys_empty() {
+        let map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.keys();
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_keys_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.keys();
+        assert_eq!(iter.next(), Some(&"key"));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_keys_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.keys();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
     }
 
     #[test]
@@ -2588,6 +4332,42 @@ mod test {
     }
 
     #[test]
+    fn test_list_ordered_multimap_back() {
+        let mut map = ListOrderedMultimap::new();
+        assert_eq!(map.back(), None);
+
+        map.insert("key1", "value1");
+        assert_eq!(map.back(), Some((&"key1", &"value1")));
+
+        map.append("key2", "value2");
+        assert_eq!(map.back(), Some((&"key2", &"value2")));
+
+        map.remove(&"key2");
+        assert_eq!(map.back(), Some((&"key1", &"value1")));
+
+        map.remove(&"key1");
+        assert_eq!(map.back(), None);
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_back_mut() {
+        let mut map = ListOrderedMultimap::new();
+        assert_eq!(map.back(), None);
+
+        map.insert("key1", "value1");
+        assert_eq!(map.back(), Some((&"key1", &"value1")));
+
+        map.append("key2", "value2");
+        assert_eq!(map.back(), Some((&"key2", &"value2")));
+
+        map.remove(&"key2");
+        assert_eq!(map.back(), Some((&"key1", &"value1")));
+
+        map.remove(&"key1");
+        assert_eq!(map.back(), None);
+    }
+
+    #[test]
     fn test_list_ordered_multimap_clear() {
         let mut map = ListOrderedMultimap::new();
         map.insert("key", "value");
@@ -2607,6 +4387,56 @@ mod test {
 
         map.insert("key", "value");
         assert!(map.contains_key(&"key"));
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.insert("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        assert_eq!(
+            format!("{:?}", map),
+            r#"{"key1": "value1", "key2": "value2", "key2": "value3", "key1": "value4"}"#
+        );
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_drain_pairs() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.insert("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let prior_keys_capacity = map.keys_capacity();
+        let prior_values_capacity = map.values_capacity();
+
+        {
+            let mut iter = map.drain_pairs();
+
+            let (key, mut values) = iter.next().unwrap();
+            assert_eq!(key, "key1");
+            assert_eq!(values.next(), Some("value1"));
+            assert_eq!(values.next(), Some("value4"));
+            assert_eq!(values.next(), None);
+
+            let (key, mut values) = iter.next().unwrap();
+            assert_eq!(key, "key2");
+            assert_eq!(values.next(), Some("value2"));
+            assert_eq!(values.next(), Some("value3"));
+            assert_eq!(values.next(), None);
+
+            assert!(iter.next().is_none());
+        }
+
+        assert!(map.is_empty());
+        assert_eq!(map.keys_capacity(), prior_keys_capacity);
+        assert_eq!(map.values_capacity(), prior_values_capacity);
     }
 
     #[test]
@@ -2642,6 +4472,67 @@ mod test {
 
         map.remove(&"key");
         assert_eq!(map.entry_len(&"key"), 0);
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_equality() {
+        let mut map_1 = ListOrderedMultimap::new();
+
+        map_1.insert("key1", "value1");
+        map_1.insert("key2", "value2");
+        map_1.append("key2", "value3");
+        map_1.append("key1", "value4");
+
+        let mut map_2 = map_1.clone();
+        map_2.pop_back();
+
+        assert_ne!(map_1, map_2);
+
+        map_2.append("key1", "value4");
+        assert_eq!(map_1, map_2);
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_extend() {
+        let mut map = ListOrderedMultimap::new();
+        map.extend(vec![("key1", "value1"), ("key2", "value2"), ("key2", "value3")].into_iter());
+
+        let mut iter = map.get_all(&"key1");
+        assert_eq!(iter.next(), Some(&"value1"));
+        assert_eq!(iter.next(), None);
+
+        let mut iter = map.get_all(&"key2");
+        assert_eq!(iter.next(), Some(&"value2"));
+        assert_eq!(iter.next(), Some(&"value3"));
+        assert_eq!(iter.next(), None);
+
+        let mut map = ListOrderedMultimap::new();
+        map.extend(vec![(&1, &1), (&2, &1), (&2, &2)].into_iter());
+
+        let mut iter = map.get_all(&1);
+        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), None);
+
+        let mut iter = map.get_all(&2);
+        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_from_iterator() {
+        let map: ListOrderedMultimap<_, _, RandomState> = ListOrderedMultimap::from_iter(
+            vec![("key1", "value1"), ("key2", "value2"), ("key2", "value3")].into_iter(),
+        );
+
+        let mut iter = map.get_all(&"key1");
+        assert_eq!(iter.next(), Some(&"value1"));
+        assert_eq!(iter.next(), None);
+
+        let mut iter = map.get_all(&"key2");
+        assert_eq!(iter.next(), Some(&"value2"));
+        assert_eq!(iter.next(), Some(&"value3"));
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -2927,6 +4818,130 @@ mod test {
     }
 
     #[test]
+    fn test_list_ordered_multimap_pairs() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.insert("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.pairs();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key1");
+        assert_eq!(values.next(), Some(&"value1"));
+        assert_eq!(values.next(), Some(&"value4"));
+        assert_eq!(values.next(), None);
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key2");
+        assert_eq!(values.next(), Some(&"value2"));
+        assert_eq!(values.next(), Some(&"value3"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_pairs_mut() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.insert("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.pairs_mut();
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key1");
+        assert_eq!(values.next(), Some(&mut "value1"));
+        assert_eq!(values.next(), Some(&mut "value4"));
+        assert_eq!(values.next(), None);
+
+        let (key, mut values) = iter.next().unwrap();
+        assert_eq!(key, &"key2");
+        assert_eq!(values.next(), Some(&mut "value2"));
+        assert_eq!(values.next(), Some(&mut "value3"));
+        assert_eq!(values.next(), None);
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_pop_back() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.insert("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let (key, value) = map.pop_back().unwrap();
+        assert_eq!(key, KeyWrapper::Borrowed(&"key1"));
+        assert_eq!(&value, &"value4");
+        assert_eq!(map.keys_len(), 2);
+        assert_eq!(map.values_len(), 3);
+
+        let (key, value) = map.pop_back().unwrap();
+        assert_eq!(key, KeyWrapper::Borrowed(&"key2"));
+        assert_eq!(&value, &"value3");
+        assert_eq!(map.keys_len(), 2);
+        assert_eq!(map.values_len(), 2);
+
+        let (key, value) = map.pop_back().unwrap();
+        assert_eq!(key, KeyWrapper::Owned("key2"));
+        assert_eq!(&value, &"value2");
+        assert_eq!(map.keys_len(), 1);
+        assert_eq!(map.values_len(), 1);
+
+        let (key, value) = map.pop_back().unwrap();
+        assert_eq!(key, KeyWrapper::Owned("key1"));
+        assert_eq!(&value, &"value1");
+        assert_eq!(map.keys_len(), 0);
+        assert_eq!(map.values_len(), 0);
+
+        assert!(map.pop_back().is_none());
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_pop_front() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.insert("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let (key, value) = map.pop_front().unwrap();
+        assert_eq!(key, KeyWrapper::Borrowed(&"key1"));
+        assert_eq!(&value, &"value1");
+        assert_eq!(map.keys_len(), 2);
+        assert_eq!(map.values_len(), 3);
+
+        let (key, value) = map.pop_front().unwrap();
+        assert_eq!(key, KeyWrapper::Borrowed(&"key2"));
+        assert_eq!(&value, &"value2");
+        assert_eq!(map.keys_len(), 2);
+        assert_eq!(map.values_len(), 2);
+
+        let (key, value) = map.pop_front().unwrap();
+        assert_eq!(key, KeyWrapper::Owned("key2"));
+        assert_eq!(&value, &"value3");
+        assert_eq!(map.keys_len(), 1);
+        assert_eq!(map.values_len(), 1);
+
+        let (key, value) = map.pop_front().unwrap();
+        assert_eq!(key, KeyWrapper::Owned("key1"));
+        assert_eq!(&value, &"value4");
+        assert_eq!(map.keys_len(), 0);
+        assert_eq!(map.values_len(), 0);
+
+        assert!(map.pop_front().is_none());
+    }
+
+    #[test]
     fn test_list_ordered_multimap_remove() {
         let mut map = ListOrderedMultimap::new();
         assert_eq!(map.remove(&"key"), None);
@@ -2961,6 +4976,41 @@ mod test {
     }
 
     #[test]
+    fn test_list_ordered_multimap_remove_entry() {
+        let mut map = ListOrderedMultimap::new();
+        assert_eq!(map.remove_entry(&"key"), None);
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        assert_eq!(map.remove_entry(&"key"), Some(("key", "value1")));
+        assert_eq!(map.remove_entry(&"key"), None);
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_remove_entry_all() {
+        let mut map = ListOrderedMultimap::new();
+
+        {
+            let entry = map.remove_entry_all(&"key");
+            assert!(entry.is_none());
+        }
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+
+        {
+            let (key, mut iter) = map.remove_entry_all(&"key").unwrap();
+            assert_eq!(key, "key");
+            assert_eq!(iter.next(), Some("value1"));
+            assert_eq!(iter.next(), Some("value2"));
+            assert_eq!(iter.next(), None);
+        }
+
+        let entry = map.remove_entry_all(&"key");
+        assert!(entry.is_none());
+    }
+
+    #[test]
     fn test_list_ordered_multimap_reserve_keys() {
         let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
         assert_eq!(map.keys_capacity(), 0);
@@ -2988,6 +5038,28 @@ mod test {
 
         map.reserve_values(2);
         assert_eq!(map.values_capacity(), 5);
+    }
+
+    #[test]
+    fn test_list_ordered_multimap_retain() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", 1);
+        map.insert("key2", 5);
+        map.append("key1", -1);
+        map.insert("key3", -10);
+        map.insert("key4", 1);
+        map.append("key4", -1);
+        map.append("key4", 1);
+
+        map.retain(|_, &mut value| value >= 0);
+
+        let mut iter = map.iter();
+        assert_eq!(iter.next(), Some((&"key1", &1)));
+        assert_eq!(iter.next(), Some((&"key2", &5)));
+        assert_eq!(iter.next(), Some((&"key4", &1)));
+        assert_eq!(iter.next(), Some((&"key4", &1)));
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -3077,5 +5149,193 @@ mod test {
         assert_eq!(map.keys_len(), 0);
         assert!(map.values_capacity() >= 2);
         assert_eq!(map.values_len(), 0);
+    }
+
+    #[test]
+    fn test_occupied_entry_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value1");
+        map.append("key", "value2");
+        map.append("key", "value3");
+        map.append("key", "value4");
+
+        let entry = match map.entry(&"key") {
+            Entry::Occupied(entry) => entry,
+            _ => panic!("expected occupied entry"),
+        };
+
+        assert_eq!(
+            format!("{:?}", entry),
+            "OccupiedEntry { \
+             key: \"key\", \
+             values: EntryValues([\"value1\", \"value2\", \"value3\", \"value4\"]) \
+             }"
+        );
+    }
+
+    #[test]
+    fn test_vacant_entry_debug() {
+        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let entry = match map.entry(&"key") {
+            Entry::Vacant(entry) => entry,
+            _ => panic!("expected vacant entry"),
+        };
+
+        assert_eq!(format!("{:?}", entry), r#"VacantEntry("key")"#);
+    }
+
+    #[test]
+    fn test_values_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.values();
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"Values(["value1", "value2", "value3", "value4"])"#
+        );
+    }
+
+    #[test]
+    fn test_values_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.values();
+        assert_eq!(iter.next(), Some(&"value1"));
+        assert_eq!(iter.next_back(), Some(&"value4"));
+        assert_eq!(iter.next(), Some(&"value2"));
+        assert_eq!(iter.next_back(), Some(&"value3"));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_values_empty() {
+        let map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.values();
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_values_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.values();
+        assert_eq!(iter.next(), Some(&"value"));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_values_mut_debug() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let iter = map.values_mut();
+        assert_eq!(
+            format!("{:?}", iter),
+            r#"ValuesMut(["value1", "value2", "value3", "value4"])"#
+        );
+    }
+
+    #[test]
+    fn test_values_mut_double_ended() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.values_mut();
+        assert_eq!(iter.next(), Some(&mut "value1"));
+        assert_eq!(iter.next_back(), Some(&mut "value4"));
+        assert_eq!(iter.next(), Some(&mut "value2"));
+        assert_eq!(iter.next_back(), Some(&mut "value3"));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_values_mut_empty() {
+        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+        let mut iter = map.values_mut();
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_values_mut_fused() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key", "value");
+
+        let mut iter = map.values_mut();
+        assert_eq!(iter.next(), Some(&mut "value"));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_values_mut_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.values_mut();
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_values_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.values();
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
     }
 }

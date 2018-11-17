@@ -1,13 +1,13 @@
 # ordered-map-rs
 
 [![LICENSE](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Build Status](https://travis-ci.org/sgodwincs/ordered-map-rs.svg?branch=master)](https://travis-ci.org/sgodwincs/ordered-map-rs)
+[![Build Status](https://travis-ci.org/sgodwincs/ordered-multimap-rs.svg?branch=master)](https://travis-ci.org/sgodwincs/ordered-multimap-rs)
 
-Currently, this crate contains a single time `ListOrderedMultimap`. This is a multimap meaning that
+Currently, this crate contains a single type `ListOrderedMultimap`. This is a multimap meaning that
 multiple values can be associated with a given key, but it also maintains insertion order across all
 keys and values.
 
-[Documentation](https://docs.rs/ordered-map/)
+[Documentation](https://docs.rs/ordered-multimap/)
 
 # Performance
 

@@ -1,10 +1,9 @@
 use dlv_list::{
     Drain as VecListDrain, Index, Iter as VecListIter, IterMut as VecListIterMut, VecList,
 };
-use hashbrown::hash_map::Entry as HashMapEntry;
-use hashbrown::HashMap;
 use std::borrow::Borrow;
-use std::collections::hash_map::RandomState;
+use std::collections::hash_map::{RandomState, RawEntryMut, RawOccupiedEntryMut};
+use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::iter::{FromIterator, FusedIterator};
@@ -19,7 +18,7 @@ pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
 
     /// The map from hashes of keys to the indices of their values in the value list. The list of
     /// the indices is ordered by time of insertion.
-    map: HashMap<KeyHash, MapEntry<Key, Value>, State>,
+    map: HashMap<Index<Key>, MapEntry<Key, Value>, State>,
 
     /// The list of the values in the multimap. This is ordered by time of insertion.
     values: VecList<ValueEntry<Key, Value>>,
@@ -103,14 +102,16 @@ where
     /// assert_eq!(map.values_len(), 2);
     /// ```
     pub fn append(&mut self, key: Key, value: Value) -> bool {
-        use self::HashMapEntry::*;
+        use self::RawEntryMut::*;
 
-        let hash = self.key_hash(&key);
+        let hash = hash_key(&self.map, &key);
+        let entry = raw_entry_mut(&self.keys, &mut self.map, hash, &key);
 
-        match self.map.entry(hash) {
+        match entry {
             Occupied(mut entry) => {
+                let key_index = entry.key();
+                let mut value_entry = ValueEntry::new(*key_index, value);
                 let map_entry = entry.get_mut();
-                let mut value_entry = ValueEntry::new(map_entry.key_index, value);
                 value_entry.previous_index = Some(map_entry.tail_index);
                 let index = self.values.push_back(value_entry);
                 self.values
@@ -124,7 +125,7 @@ where
                 let key_index = self.keys.push_back(key);
                 let value_entry = ValueEntry::new(key_index, value);
                 let index = self.values.push_back(value_entry);
-                entry.insert(MapEntry::new(key_index, index));
+                entry.insert_hashed_nocheck(hash, key_index, MapEntry::new(index));
                 false
             }
         }
@@ -211,7 +212,8 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        self.map.contains_key(&self.key_hash(key))
+        let hash = hash_key(&self.map, &key);
+        raw_entry(&self.keys, &self.map, hash, key).is_some()
     }
 
     /// Returns an iterator that yields keys and all associated values with those keys as separate
@@ -241,6 +243,7 @@ where
     /// ```
     pub fn drain_pairs(&mut self) -> KeyValuesDrain<Key, Value, State> {
         KeyValuesDrain {
+            keys: &self.keys as *const _,
             dropped: Arc::new(AtomicUsize::new(self.keys_len())),
             iter: self.keys.drain(),
             map: &mut self.map,
@@ -263,16 +266,32 @@ where
     /// assert_eq!(map.get(&"key"), Some(&"value"));
     /// ```
     pub fn entry(&mut self, key: Key) -> Entry<Key, Value, State> {
-        let hash = self.key_hash(&key);
+        use self::RawEntryMut::*;
 
-        if self.map.contains_key(&hash) {
-            Entry::Occupied(OccupiedEntry { hash, map: self })
-        } else {
+        let hash = hash_key(&self.map, &key);
+
+        // TODO: This ugliness arises from borrow checking issues which seems to happen when the
+        // vacant entry is created in the match block further below for `Vacant` even though it
+        // should be perfectly safe. Is there a better way to do this?
+        if !self.contains_key(&key) {
             Entry::Vacant(VacantEntry {
                 hash,
-                key,
-                map: self,
+                key: key,
+                keys: &mut self.keys,
+                map: &mut self.map,
+                values: &mut self.values,
             })
+        } else {
+            match raw_entry_mut(&self.keys, &mut self.map, hash, &key) {
+                Occupied(entry) => {
+                    return Entry::Occupied(OccupiedEntry {
+                        entry,
+                        keys: &mut self.keys,
+                        values: &mut self.values,
+                    });
+                }
+                _ => panic!("expected occupied entry"),
+            }
         }
     }
 
@@ -299,11 +318,12 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = self.key_hash(key);
-        self.map
-            .get(&hash)
-            .map(|map_entry| map_entry.length)
-            .unwrap_or(0)
+        let hash = hash_key(&self.map, &key);
+
+        match raw_entry(&self.keys, &self.map, hash, key) {
+            Some((_, map_entry)) => map_entry.length,
+            None => 0,
+        }
     }
 
     /// Returns an immutable reference to the first key-value pair in the multimap
@@ -354,23 +374,20 @@ where
     /// ```
     /// use ordered_multimap::ListOrderedMultimap;
     ///
-    /// let mut map = ListOrderedMultimap::new();
+    /// let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
     /// assert_eq!(map.get(&"key"), None);
     ///
-    /// map.insert("key", "value");
-    /// assert_eq!(map.get(&"key"), Some(&"value"));
-    ///
-    /// map.append("key", "value2");
-    /// assert_eq!(map.get(&"key"), Some(&"value"));
     /// ```
     pub fn get<KeyQuery>(&self, key: &KeyQuery) -> Option<&Value>
     where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = self.key_hash(key);
-        let index = self.map.get(&hash)?.head_index;
-        self.values.get(index).map(|entry| &entry.value)
+        let hash = hash_key(&self.map, &key);
+        let (_, map_entry) = raw_entry(&self.keys, &self.map, hash, key)?;
+        self.values
+            .get(map_entry.head_index)
+            .map(|entry| &entry.value)
     }
 
     /// Returns an iterator that yields immutable references to all values associated with the
@@ -397,10 +414,10 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = self.key_hash(key);
+        let hash = hash_key(&self.map, &key);
 
-        match self.map.get(&hash) {
-            Some(map_entry) => EntryValues::from_map_entry(&self.values, &map_entry),
+        match raw_entry(&self.keys, &self.map, hash, key) {
+            Some((_, map_entry)) => EntryValues::from_map_entry(&self.values, &map_entry),
             None => EntryValues::empty(&self.values),
         }
     }
@@ -435,10 +452,10 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = self.key_hash(key);
+        let hash = hash_key(&self.map, &key);
 
-        match self.map.get(&hash) {
-            Some(map_entry) => EntryValuesMut::from_map_entry(&mut self.values, &map_entry),
+        match raw_entry(&self.keys, &self.map, hash, key) {
+            Some((_, map_entry)) => EntryValuesMut::from_map_entry(&mut self.values, &map_entry),
             None => EntryValuesMut::empty(&mut self.values),
         }
     }
@@ -469,9 +486,11 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = self.key_hash(key);
-        let index = self.map.get(&hash)?.head_index;
-        self.values.get_mut(index).map(|entry| &mut entry.value)
+        let hash = hash_key(&self.map, &key);
+        let (_, map_entry) = raw_entry(&self.keys, &self.map, hash, key)?;
+        self.values
+            .get_mut(map_entry.head_index)
+            .map(|entry| &mut entry.value)
     }
 
     /// Returns a reference to the multimap's [`BuildHasher`].
@@ -555,15 +574,17 @@ where
     /// assert_eq!(map.get(&"key"), Some(&"value3"));
     /// ```
     pub fn insert_all(&mut self, key: Key, value: Value) -> EntryValuesDrain<Key, Value> {
-        use self::HashMapEntry::*;
+        use self::RawEntryMut::*;
 
-        let hash = self.key_hash(&key);
+        let hash = hash_key(&self.map, &key);
+        let entry = raw_entry_mut(&self.keys, &mut self.map, hash, &key);
 
-        match self.map.entry(hash) {
+        match entry {
             Occupied(mut entry) => {
-                let map_entry = entry.get_mut();
-                let value_entry = ValueEntry::new(map_entry.key_index, value);
+                let key_index = entry.key();
+                let value_entry = ValueEntry::new(*key_index, value);
                 let index = self.values.push_back(value_entry);
+                let map_entry = entry.get_mut();
                 let iter = EntryValuesDrain::from_map_entry(&mut self.values, &map_entry);
                 map_entry.reset(index);
                 iter
@@ -572,7 +593,7 @@ where
                 let key_index = self.keys.push_back(key);
                 let value_entry = ValueEntry::new(key_index, value);
                 let index = self.values.push_back(value_entry);
-                entry.insert(MapEntry::new(key_index, index));
+                entry.insert_hashed_nocheck(hash, key_index, MapEntry::new(index));
                 EntryValuesDrain::empty(&mut self.values)
             }
         }
@@ -662,15 +683,6 @@ where
             keys: &self.keys,
             iter: self.values.iter_mut(),
         }
-    }
-
-    /// Computes the hash value of the given key.
-    fn key_hash<KeyQuery>(&self, key: &KeyQuery) -> KeyHash
-    where
-        Key: Borrow<KeyQuery>,
-        KeyQuery: ?Sized + Eq + Hash,
-    {
-        KeyHash::new(&key.borrow(), self.hasher())
     }
 
     /// Returns an iterator that yields immutable references to all keys in the multimap by
@@ -795,12 +807,22 @@ where
                 .map(|index| *value_map.get(&index).unwrap());
         }
 
-        for (key, mut map_entry) in self.map.drain() {
+        for (key_index, mut map_entry) in self.map.drain() {
             map_entry.head_index = *value_map.get(&map_entry.head_index).unwrap();
-            map_entry.key_index = *key_map.get(&map_entry.key_index).unwrap();
             map_entry.tail_index = *value_map.get(&map_entry.tail_index).unwrap();
-            map.insert(key, map_entry);
+            let key_index = *key_map.get(&key_index).unwrap();
+            let key = self.keys.get(key_index).unwrap();
+            let hash = hash_key(&map, key);
+
+            match map.raw_entry_mut().search_bucket(hash, |_| false) {
+                RawEntryMut::Vacant(entry) => {
+                    entry.insert_hashed_nocheck(hash, key_index, map_entry);
+                }
+                _ => panic!("expected vacant entry"),
+            }
         }
+
+        self.map = map;
     }
 
     /// Reorganizes the multimap to ensure maximum spatial locality and removes any excess key and
@@ -857,6 +879,7 @@ where
     /// ```
     pub fn pairs(&self) -> KeyValues<Key, Value, State> {
         KeyValues {
+            keys: &self.keys,
             iter: self.keys.iter(),
             map: &self.map,
             values: &self.values,
@@ -887,6 +910,7 @@ where
     /// ```
     pub fn pairs_mut(&mut self) -> KeyValuesMut<Key, Value, State> {
         KeyValuesMut {
+            keys: &self.keys,
             iter: self.keys.iter(),
             map: &self.map,
             values: &mut self.values as *mut _,
@@ -926,29 +950,41 @@ where
     /// ```
     pub fn pop_back(&mut self) -> Option<(KeyWrapper<Key>, Value)> {
         let value_entry = self.values.pop_back()?;
-        let key = self.keys.get(value_entry.key_index).unwrap();
-        let hash = self.key_hash(key);
-        let mut entry = match self.map.entry(hash) {
-            HashMapEntry::Occupied(entry) => entry,
-            _ => panic!("expected occupied entry in internal map"),
-        };
-        let key = match value_entry.previous_index {
-            Some(previous_index) => {
-                let value_entry = self.values.get_mut(previous_index).unwrap();
-                value_entry.next_index = None;
 
+        let key_wrapper = match value_entry.previous_index {
+            Some(previous_index) => {
+                let key = self.keys.get(value_entry.key_index).unwrap();
+                let hash = hash_key(&self.map, &key);
+
+                let mut entry = match raw_entry_mut(&self.keys, &mut self.map, hash, key) {
+                    RawEntryMut::Occupied(entry) => entry,
+                    _ => panic!("expected occupied entry in internal map"),
+                };
                 let map_entry = entry.get_mut();
                 map_entry.length -= 1;
                 map_entry.tail_index = previous_index;
-                KeyWrapper::Borrowed(self.keys.get(value_entry.key_index).unwrap())
+
+                let previous_value_entry = self.values.get_mut(previous_index).unwrap();
+                previous_value_entry.next_index = None;
+
+                KeyWrapper::Borrowed(key)
             }
             None => {
-                entry.remove();
-                KeyWrapper::Owned(self.keys.remove(value_entry.key_index).unwrap())
+                let key = self.keys.remove(value_entry.key_index).unwrap();
+                let hash = hash_key(&self.map, &key);
+
+                match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
+                    RawEntryMut::Occupied(entry) => {
+                        entry.remove();
+                    }
+                    _ => panic!("expectd occupied entry in internal map"),
+                }
+
+                KeyWrapper::Owned(key)
             }
         };
 
-        Some((key, value_entry.value))
+        Some((key_wrapper, value_entry.value))
     }
 
     /// Removes the first key-value pair to have been inserted.
@@ -984,29 +1020,41 @@ where
     /// ```
     pub fn pop_front(&mut self) -> Option<(KeyWrapper<Key>, Value)> {
         let value_entry = self.values.pop_front()?;
-        let key = self.keys.get(value_entry.key_index).unwrap();
-        let hash = self.key_hash(key);
-        let mut entry = match self.map.entry(hash) {
-            HashMapEntry::Occupied(entry) => entry,
-            _ => panic!("expected occupied entry in internal map"),
-        };
-        let key = match value_entry.next_index {
-            Some(next_index) => {
-                let value_entry = self.values.get_mut(next_index).unwrap();
-                value_entry.previous_index = None;
 
+        let key_wrapper = match value_entry.next_index {
+            Some(next_index) => {
+                let key = self.keys.get(value_entry.key_index).unwrap();
+                let hash = hash_key(&self.map, &key);
+
+                let mut entry = match raw_entry_mut(&self.keys, &mut self.map, hash, key) {
+                    RawEntryMut::Occupied(entry) => entry,
+                    _ => panic!("expected occupied entry in internal map"),
+                };
                 let map_entry = entry.get_mut();
                 map_entry.length -= 1;
                 map_entry.head_index = next_index;
-                KeyWrapper::Borrowed(self.keys.get(value_entry.key_index).unwrap())
+
+                let next_value_entry = self.values.get_mut(next_index).unwrap();
+                next_value_entry.previous_index = None;
+
+                KeyWrapper::Borrowed(key)
             }
             None => {
-                entry.remove();
-                KeyWrapper::Owned(self.keys.remove(value_entry.key_index).unwrap())
+                let key = self.keys.remove(value_entry.key_index).unwrap();
+                let hash = hash_key(&self.map, &key);
+
+                match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
+                    RawEntryMut::Occupied(entry) => {
+                        entry.remove();
+                    }
+                    _ => panic!("expectd occupied entry in internal map"),
+                }
+
+                KeyWrapper::Owned(key)
             }
         };
 
-        Some((key, value_entry.value))
+        Some((key_wrapper, value_entry.value))
     }
 
     /// Removes all values associated with the given key from the map and returns the first value
@@ -1076,12 +1124,18 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        match self.map.remove(&self.key_hash(key)) {
-            Some(map_entry) => {
-                self.keys.remove(map_entry.key_index).unwrap();
+        use self::RawEntryMut::*;
+
+        let hash = hash_key(&self.map, &key);
+        let entry = raw_entry_mut(&self.keys, &mut self.map, hash, key);
+
+        match entry {
+            Occupied(entry) => {
+                let (key_index, map_entry) = entry.remove_entry();
+                self.keys.remove(key_index).unwrap();
                 EntryValuesDrain::from_map_entry(&mut self.values, &map_entry)
             }
-            None => EntryValuesDrain::empty(&mut self.values),
+            Vacant(_) => EntryValuesDrain::empty(&mut self.values),
         }
     }
 
@@ -1159,13 +1213,17 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        match self.map.remove(&self.key_hash(key)) {
-            Some(map_entry) => {
-                let key = self.keys.remove(map_entry.key_index).unwrap();
+        let hash = hash_key(&self.map, &key);
+        let entry = raw_entry_mut(&self.keys, &mut self.map, hash, key);
+
+        match entry {
+            RawEntryMut::Occupied(entry) => {
+                let (key_index, map_entry) = entry.remove_entry();
+                let key = self.keys.remove(key_index).unwrap();
                 let iter = EntryValuesDrain::from_map_entry(&mut self.values, &map_entry);
                 Some((key, iter))
             }
-            None => None,
+            _ => None,
         }
     }
 
@@ -1256,7 +1314,7 @@ where
     /// Helper function for [`ListOrderedMultimap::retain`] to deal with borrowing issues.
     fn retain_helper<'map, Function>(
         keys: &'map mut VecList<Key>,
-        map: &'map mut HashMap<KeyHash, MapEntry<Key, Value>, State>,
+        map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
         values: &'map mut VecList<ValueEntry<Key, Value>>,
         mut function: Function,
     ) where
@@ -1267,9 +1325,9 @@ where
             let key = keys.get(value_entry.key_index).unwrap();
 
             if !function(key, &mut value_entry.value) {
-                let hash = KeyHash::new(key, map.hasher());
-                let mut entry = match map.entry(hash) {
-                    HashMapEntry::Occupied(entry) => entry,
+                let hash = hash_key(&map, key);
+                let mut entry = match raw_entry_mut(keys, map, hash, key) {
+                    RawEntryMut::Occupied(entry) => entry,
                     _ => panic!("expected occupied entry in internal map"),
                 };
 
@@ -1490,7 +1548,8 @@ where
     Key: Eq + Hash,
     Value: PartialEq,
     State: BuildHasher,
-{}
+{
+}
 
 impl<Key, Value, State> Extend<(Key, Value)> for ListOrderedMultimap<Key, Value, State>
 where
@@ -1577,24 +1636,6 @@ where
         }
 
         self.iter().eq(other.iter())
-    }
-}
-
-/// The hash value of a key. This is used to avoid having to store the actual key in the internal
-/// hash map.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct KeyHash(u64);
-
-impl KeyHash {
-    /// Convenience function to create a new key hash using the given key and hasher.
-    pub fn new<Key, State>(key: &Key, state: &State) -> KeyHash
-    where
-        Key: Eq + Hash,
-        State: BuildHasher,
-    {
-        let mut hasher = state.build_hasher();
-        key.hash(&mut hasher);
-        KeyHash(hasher.finish())
     }
 }
 
@@ -1687,9 +1728,6 @@ struct MapEntry<Key, Value> {
     /// The index of the first value for this entry.
     head_index: Index<ValueEntry<Key, Value>>,
 
-    /// The index of the key in the key list for this entry.
-    key_index: Index<Key>,
-
     /// The number of values for this entry.
     length: usize,
 
@@ -1705,10 +1743,9 @@ impl<Key, Value> MapEntry<Key, Value> {
     }
 
     /// Convenience function for creating a new multimap entry.
-    pub fn new(key_index: Index<Key>, index: Index<ValueEntry<Key, Value>>) -> Self {
+    pub fn new(index: Index<ValueEntry<Key, Value>>) -> Self {
         MapEntry {
             head_index: index,
-            key_index,
             length: 1,
             tail_index: index,
         }
@@ -1753,7 +1790,7 @@ impl<Key, Value> ValueEntry<Key, Value> {
 /// A view into a single entry in the multimap, which may either be vacant or occupied.
 pub enum Entry<'map, Key, Value, State = RandomState> {
     /// An occupied entry associated with one or more values.
-    Occupied(OccupiedEntry<'map, Key, Value, State>),
+    Occupied(OccupiedEntry<'map, Key, Value>),
 
     /// A vacant entry with no associated values.
     Vacant(VacantEntry<'map, Key, Value, State>),
@@ -1761,6 +1798,7 @@ pub enum Entry<'map, Key, Value, State = RandomState> {
 
 impl<'map, Key, Value, State> Entry<'map, Key, Value, State>
 where
+    Key: Eq + Hash,
     State: BuildHasher,
 {
     /// Calls the given function with a mutable reference to the first value of this entry, by
@@ -1842,7 +1880,7 @@ where
     /// let entry = map.entry("key2").or_insert_entry("value2");
     /// assert_eq!(entry.into_mut(), &"value2");
     /// ```
-    pub fn or_insert_entry(self, value: Value) -> OccupiedEntry<'map, Key, Value, State> {
+    pub fn or_insert_entry(self, value: Value) -> OccupiedEntry<'map, Key, Value> {
         use self::Entry::*;
 
         match self {
@@ -1902,7 +1940,7 @@ where
     pub fn or_insert_with_entry<Function>(
         self,
         function: Function,
-    ) -> OccupiedEntry<'map, Key, Value, State>
+    ) -> OccupiedEntry<'map, Key, Value>
     where
         Function: FnOnce() -> Value,
     {
@@ -1932,18 +1970,15 @@ where
 }
 
 /// A view into an occupied entry in the multimap.
-pub struct OccupiedEntry<'map, Key, Value, State = RandomState> {
-    /// The hash of the key for the entry.
-    hash: KeyHash,
+pub struct OccupiedEntry<'map, Key, Value> {
+    entry: RawOccupiedEntryMut<'map, Index<Key>, MapEntry<Key, Value>>,
 
-    /// Reference to the multimap.
-    map: &'map mut ListOrderedMultimap<Key, Value, State>,
+    keys: &'map mut VecList<Key>,
+
+    values: &'map mut VecList<ValueEntry<Key, Value>>,
 }
 
-impl<'map, Key, Value, State> OccupiedEntry<'map, Key, Value, State>
-where
-    State: BuildHasher,
-{
+impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
     /// # Examples
     ///
     /// ```
@@ -1966,12 +2001,12 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub fn append(&mut self, value: Value) {
-        let map_entry = self.map.map.get_mut(&self.hash).unwrap();
-        let mut value_entry = ValueEntry::new(map_entry.key_index, value);
+        let key_index = *self.entry.key();
+        let map_entry = self.entry.get_mut();
+        let mut value_entry = ValueEntry::new(key_index, value);
         value_entry.previous_index = Some(map_entry.tail_index);
-        let index = self.map.values.push_back(value_entry);
-        self.map
-            .values
+        let index = self.values.push_back(value_entry);
+        self.values
             .get_mut(map_entry.tail_index)
             .unwrap()
             .next_index = Some(index);
@@ -1996,8 +2031,8 @@ where
     /// assert_eq!(entry.get(), &"value");
     /// ```
     pub fn get(&self) -> &Value {
-        let index = self.map.map.get(&self.hash).unwrap().head_index;
-        &self.map.values.get(index).unwrap().value
+        let index = self.entry.get().head_index;
+        &self.values.get(index).unwrap().value
     }
 
     /// # Examples
@@ -2017,8 +2052,8 @@ where
     /// assert_eq!(entry.get(), &mut "value");
     /// ```
     pub fn get_mut(&mut self) -> &mut Value {
-        let index = self.map.map.get(&self.hash).unwrap().head_index;
-        &mut self.map.values.get_mut(index).unwrap().value
+        let index = self.entry.get().head_index;
+        &mut self.values.get_mut(index).unwrap().value
     }
 
     /// # Examples
@@ -2040,17 +2075,18 @@ where
     /// assert_eq!(map.get(&"key"), Some(&"value2"));
     /// ```
     pub fn insert(&mut self, value: Value) -> Value {
-        let map_entry = self.map.map.get_mut(&self.hash).unwrap();
+        let key_index = *self.entry.key();
+        let map_entry = self.entry.get_mut();
         let first_index = map_entry.head_index;
-        let mut entry = self.map.values.remove(first_index).unwrap();
+        let mut entry = self.values.remove(first_index).unwrap();
         let first_value = entry.value;
 
         while let Some(next_index) = entry.next_index {
-            entry = self.map.values.remove(next_index).unwrap();
+            entry = self.values.remove(next_index).unwrap();
         }
 
-        let value_entry = ValueEntry::new(map_entry.key_index, value);
-        let index = self.map.values.push_back(value_entry);
+        let value_entry = ValueEntry::new(key_index, value);
+        let index = self.values.push_back(value_entry);
         map_entry.head_index = index;
         map_entry.length = 1;
         map_entry.tail_index = index;
@@ -2079,10 +2115,11 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub fn insert_all(&mut self, value: Value) -> EntryValuesDrain<Key, Value> {
-        let map_entry = self.map.map.get_mut(&self.hash).unwrap();
-        let value_entry = ValueEntry::new(map_entry.key_index, value);
-        let index = self.map.values.push_back(value_entry);
-        let iter = EntryValuesDrain::from_map_entry(&mut self.map.values, &map_entry);
+        let key_index = *self.entry.key();
+        let map_entry = self.entry.get_mut();
+        let value_entry = ValueEntry::new(key_index, value);
+        let index = self.values.push_back(value_entry);
+        let iter = EntryValuesDrain::from_map_entry(&mut self.values, &map_entry);
         map_entry.reset(index);
         iter
     }
@@ -2103,9 +2140,9 @@ where
     ///
     /// assert_eq!(entry.into_mut(), &mut "value");
     /// ```
-    pub fn into_mut(self) -> &'map mut Value {
-        let index = self.map.map.get_mut(&self.hash).unwrap().head_index;
-        &mut self.map.values.get_mut(index).unwrap().value
+    pub fn into_mut(mut self) -> &'map mut Value {
+        let index = self.entry.get_mut().head_index;
+        &mut self.values.get_mut(index).unwrap().value
     }
 
     /// # Examples
@@ -2130,8 +2167,8 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub fn iter(&self) -> EntryValues<Key, Value> {
-        let map_entry = self.map.map.get(&self.hash).unwrap();
-        EntryValues::from_map_entry(&self.map.values, &map_entry)
+        let map_entry = self.entry.get();
+        EntryValues::from_map_entry(&self.values, &map_entry)
     }
 
     /// # Examples
@@ -2156,8 +2193,8 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub fn iter_mut(&mut self) -> EntryValuesMut<Key, Value> {
-        let map_entry = self.map.map.get_mut(&self.hash).unwrap();
-        EntryValuesMut::from_map_entry(&mut self.map.values, &map_entry)
+        let map_entry = self.entry.get_mut();
+        EntryValuesMut::from_map_entry(&mut self.values, &map_entry)
     }
 
     /// # Examples
@@ -2177,8 +2214,8 @@ where
     /// assert_eq!(entry.key(), &"key");
     /// ```
     pub fn key(&self) -> &Key {
-        let key_index = self.map.map.get(&self.hash).unwrap().key_index;
-        self.map.keys.get(key_index).unwrap()
+        let key_index = self.entry.key();
+        self.keys.get(*key_index).unwrap()
     }
 
     /// # Examples
@@ -2201,7 +2238,7 @@ where
     /// assert_eq!(entry.len(), 2);
     /// ```
     pub fn len(&self) -> usize {
-        self.map.map.get(&self.hash).unwrap().length
+        self.entry.get().length
     }
 
     /// # Examples
@@ -2221,17 +2258,7 @@ where
     /// assert_eq!(entry.remove(), "value");
     /// ```
     pub fn remove(self) -> Value {
-        let map_entry = self.map.map.remove(&self.hash).unwrap();
-        self.map.keys.remove(map_entry.key_index).unwrap();
-        let first_index = map_entry.head_index;
-        let mut entry = self.map.values.remove(first_index).unwrap();
-        let first_value = entry.value;
-
-        while let Some(next_index) = entry.next_index {
-            entry = self.map.values.remove(next_index).unwrap();
-        }
-
-        first_value
+        self.remove_entry().1
     }
 
     /// # Examples
@@ -2276,14 +2303,14 @@ where
     /// assert_eq!(entry.remove_entry(), ("key", "value"));
     /// ```
     pub fn remove_entry(self) -> (Key, Value) {
-        let map_entry = self.map.map.remove(&self.hash).unwrap();
-        let key = self.map.keys.remove(map_entry.key_index).unwrap();
+        let (key_index, map_entry) = self.entry.remove_entry();
+        let key = self.keys.remove(key_index).unwrap();
         let first_index = map_entry.head_index;
-        let mut entry = self.map.values.remove(first_index).unwrap();
+        let mut entry = self.values.remove(first_index).unwrap();
         let first_value = entry.value;
 
         while let Some(next_index) = entry.next_index {
-            entry = self.map.values.remove(next_index).unwrap();
+            entry = self.values.remove(next_index).unwrap();
         }
 
         (key, first_value)
@@ -2312,23 +2339,22 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub fn remove_entry_all(self) -> (Key, EntryValuesDrain<'map, Key, Value>) {
-        let map_entry = self.map.map.remove(&self.hash).unwrap();
-        let key = self.map.keys.remove(map_entry.key_index).unwrap();
+        let (key_index, map_entry) = self.entry.remove_entry();
+        let key = self.keys.remove(key_index).unwrap();
         let iter = EntryValuesDrain {
             head_index: Some(map_entry.head_index),
             remaining: map_entry.length,
             tail_index: Some(map_entry.tail_index),
-            values: &mut self.map.values,
+            values: self.values,
         };
         (key, iter)
     }
 }
 
-impl<Key, Value, State> Debug for OccupiedEntry<'_, Key, Value, State>
+impl<Key, Value> Debug for OccupiedEntry<'_, Key, Value>
 where
     Key: Debug,
     Value: Debug,
-    State: BuildHasher,
 {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
         formatter
@@ -2342,17 +2368,22 @@ where
 /// A view into a vacant entry in the multimap.
 pub struct VacantEntry<'map, Key, Value, State = RandomState> {
     /// The hash of the key for the entry.
-    hash: KeyHash,
+    hash: u64,
 
     /// The key for this entry for when it is to be inserted into the map.
     key: Key,
 
+    keys: &'map mut VecList<Key>,
+
     /// Reference to the multimap.
-    map: &'map mut ListOrderedMultimap<Key, Value, State>,
+    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+
+    values: &'map mut VecList<ValueEntry<Key, Value>>,
 }
 
 impl<'map, Key, Value, State> VacantEntry<'map, Key, Value, State>
 where
+    Key: Eq + Hash,
     State: BuildHasher,
 {
     /// # Examples
@@ -2371,12 +2402,17 @@ where
     /// assert_eq!(entry.insert("value"), &"value");
     /// ```
     pub fn insert(self, value: Value) -> &'map mut Value {
-        let key_index = self.map.keys.push_back(self.key);
+        let entry = match raw_entry_mut(self.keys, self.map, self.hash, &self.key) {
+            RawEntryMut::Vacant(entry) => entry,
+            _ => panic!("expected vacant entry"),
+        };
+        let key_index = self.keys.push_back(self.key);
         let value_entry = ValueEntry::new(key_index, value);
-        let index = self.map.values.push_back(value_entry);
-        let map_entry = MapEntry::new(key_index, index);
-        self.map.map.insert(self.hash, map_entry);
-        &mut self.map.values.get_mut(index).unwrap().value
+        let index = self.values.push_back(value_entry);
+        let map_entry = MapEntry::new(index);
+        entry.insert_hashed_nocheck(self.hash, key_index, map_entry);
+
+        &mut self.values.get_mut(index).unwrap().value
     }
 
     /// # Examples
@@ -2395,16 +2431,27 @@ where
     /// let mut entry = entry.insert_entry("value");
     /// assert_eq!(entry.get(), &"value");
     /// ```
-    pub fn insert_entry(self, value: Value) -> OccupiedEntry<'map, Key, Value, State> {
-        let key_index = self.map.keys.push_back(self.key);
+    pub fn insert_entry(self, value: Value) -> OccupiedEntry<'map, Key, Value> {
+        let entry = match raw_entry_mut(self.keys, self.map, self.hash, &self.key) {
+            RawEntryMut::Vacant(entry) => entry,
+            _ => panic!("expected vacant entry"),
+        };
+        let key_index = self.keys.push_back(self.key);
         let value_entry = ValueEntry::new(key_index, value);
-        let index = self.map.values.push_back(value_entry);
-        let map_entry = MapEntry::new(key_index, index);
-        self.map.map.insert(self.hash, map_entry);
+        let index = self.values.push_back(value_entry);
+        let map_entry = MapEntry::new(index);
+        entry.insert_hashed_nocheck(self.hash, key_index, map_entry);
+
+        let key = self.keys.get(key_index).unwrap();
+        let entry = match raw_entry_mut(self.keys, self.map, self.hash, key) {
+            RawEntryMut::Occupied(entry) => entry,
+            _ => panic!("expected occupied entry"),
+        };
 
         OccupiedEntry {
-            hash: self.hash,
-            map: self.map,
+            entry,
+            keys: self.keys,
+            values: self.values,
         }
     }
 
@@ -2783,13 +2830,15 @@ unsafe impl<Key, Value> Send for EntryValuesMut<'_, Key, Value>
 where
     Key: Send,
     Value: Send,
-{}
+{
+}
 
 unsafe impl<Key, Value> Sync for EntryValuesMut<'_, Key, Value>
 where
     Key: Sync,
     Value: Sync,
-{}
+{
+}
 
 /// An iterator that yields immutable references to all key-value pairs in a multimap. The order of
 /// the yielded items is always in the order that they were inserted.
@@ -2909,11 +2958,14 @@ impl<'map, Key, Value> Iterator for IterMut<'map, Key, Value> {
 /// An iterator that yields immutable references to all keys and their value iterators. The order of
 /// the yielded items is always in the order the keys were first inserted.
 pub struct KeyValues<'map, Key, Value, State = RandomState> {
+    // The list of the keys in the map. This is ordered by time of insertion.
+    keys: &'map VecList<Key>,
+
     /// The iterator over the list of all values. This is ordered by time of insertion.
     iter: VecListIter<'map, Key>,
 
     /// The internal mapping from key hashes to associated value indices.
-    map: &'map HashMap<KeyHash, MapEntry<Key, Value>, State>,
+    map: &'map HashMap<Index<Key>, MapEntry<Key, Value>, State>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
     values: &'map VecList<ValueEntry<Key, Value>>,
@@ -2922,6 +2974,7 @@ pub struct KeyValues<'map, Key, Value, State = RandomState> {
 impl<'map, Key, Value, State> Clone for KeyValues<'map, Key, Value, State> {
     fn clone(&self) -> KeyValues<'map, Key, Value, State> {
         KeyValues {
+            keys: self.keys,
             iter: self.iter.clone(),
             map: self.map,
             values: self.values,
@@ -2949,8 +3002,8 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let key = self.iter.next_back()?;
-        let hash = KeyHash::new(&key, self.map.hasher());
-        let map_entry = self.map.get(&hash).unwrap();
+        let hash = hash_key(&self.map, key);
+        let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValues::from_map_entry(&self.values, &map_entry);
         Some((key, iter))
     }
@@ -2960,13 +3013,15 @@ impl<Key, Value, State> ExactSizeIterator for KeyValues<'_, Key, Value, State>
 where
     Key: Eq + Hash,
     State: BuildHasher,
-{}
+{
+}
 
 impl<Key, Value, State> FusedIterator for KeyValues<'_, Key, Value, State>
 where
     Key: Eq + Hash,
     State: BuildHasher,
-{}
+{
+}
 
 impl<'map, Key, Value, State> Iterator for KeyValues<'map, Key, Value, State>
 where
@@ -2977,8 +3032,8 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.iter.next()?;
-        let hash = KeyHash::new(&key, self.map.hasher());
-        let map_entry = self.map.get(&hash).unwrap();
+        let hash = hash_key(&self.map, key);
+        let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValues::from_map_entry(&self.values, &map_entry);
         Some((key, iter))
     }
@@ -3002,8 +3057,11 @@ where
     /// The drain iterator over the list of all values. This is ordered by time of insertion.
     iter: VecListDrain<'map, Key>,
 
+    // The list of the keys in the map. This is ordered by time of insertion.
+    keys: *const VecList<Key>,
+
     /// The internal mapping from key hashes to associated value indices.
-    map: &'map mut HashMap<KeyHash, MapEntry<Key, Value>, State>,
+    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
     values: *mut VecList<ValueEntry<Key, Value>>,
@@ -3017,6 +3075,7 @@ where
     /// Creates an iterator that yields immutable references to all keys and their value iterators.
     pub fn iter(&self) -> KeyValues<Key, Value, State> {
         KeyValues {
+            keys: unsafe { &*self.keys },
             iter: self.iter.iter(),
             map: self.map,
             values: unsafe { &*self.values },
@@ -3044,8 +3103,12 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let key = self.iter.next_back()?;
-        let hash = KeyHash::new(&key, self.map.hasher());
-        let map_entry = self.map.remove(&hash).unwrap();
+        let hash = hash_key(&self.map, &key);
+        let entry = match raw_entry_mut_empty(unsafe { &*self.keys }, self.map, hash) {
+            RawEntryMut::Occupied(entry) => entry,
+            _ => panic!("expected occupied entry in internal map"),
+        };
+        let map_entry = entry.remove();
         let iter = KeyValuesEntryDrain::from_map_entry(
             unsafe { &mut *self.values },
             &map_entry,
@@ -3069,13 +3132,15 @@ impl<Key, Value, State> ExactSizeIterator for KeyValuesDrain<'_, Key, Value, Sta
 where
     Key: Eq + Hash,
     State: BuildHasher,
-{}
+{
+}
 
 impl<Key, Value, State> FusedIterator for KeyValuesDrain<'_, Key, Value, State>
 where
     Key: Eq + Hash,
     State: BuildHasher,
-{}
+{
+}
 
 impl<'map, Key, Value, State> Iterator for KeyValuesDrain<'map, Key, Value, State>
 where
@@ -3086,8 +3151,12 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.iter.next()?;
-        let hash = KeyHash::new(&key, self.map.hasher());
-        let map_entry = self.map.remove(&hash).unwrap();
+        let hash = hash_key(&self.map, &key);
+        let entry = match raw_entry_mut_empty(unsafe { &*self.keys }, self.map, hash) {
+            RawEntryMut::Occupied(entry) => entry,
+            _ => panic!("expected occupied entry in internal map"),
+        };
+        let map_entry = entry.remove();
         let iter = KeyValuesEntryDrain::from_map_entry(
             unsafe { &mut *self.values },
             &map_entry,
@@ -3106,14 +3175,16 @@ where
     Key: Eq + Hash + Send,
     State: BuildHasher,
     Value: Send,
-{}
+{
+}
 
 unsafe impl<Key, Value, State> Sync for KeyValuesDrain<'_, Key, Value, State>
 where
     Key: Eq + Hash + Sync,
     State: BuildHasher,
     Value: Sync,
-{}
+{
+}
 
 /// An iterator that drains all values for a given key. The order of the yielded items is always in
 /// the order the values were first inserted.
@@ -3228,10 +3299,16 @@ impl<Key, Value> Iterator for KeyValuesEntryDrain<'_, Key, Value> {
 }
 
 pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
+    // The list of the keys in the map. This is ordered by time of insertion.
+    keys: &'map VecList<Key>,
+
+    /// The iterator over the list of all values. This is ordered by time of insertion.
     iter: VecListIter<'map, Key>,
 
-    map: &'map HashMap<KeyHash, MapEntry<Key, Value>, State>,
+    /// The internal mapping from key hashes to associated value indices.
+    map: &'map HashMap<Index<Key>, MapEntry<Key, Value>, State>,
 
+    /// The list of the values in the map. This is ordered by time of insertion.
     values: *mut VecList<ValueEntry<Key, Value>>,
 }
 
@@ -3239,6 +3316,7 @@ impl<Key, Value, State> KeyValuesMut<'_, Key, Value, State> {
     /// Creates an iterator that yields mutable references to all key-value pairs of a multimap.
     pub fn iter(&self) -> KeyValues<Key, Value, State> {
         KeyValues {
+            keys: self.keys,
             iter: self.iter.clone(),
             map: self.map,
             values: unsafe { &*self.values },
@@ -3266,8 +3344,8 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let key = self.iter.next_back()?;
-        let hash = KeyHash::new(&key, self.map.hasher());
-        let map_entry = self.map.get(&hash).unwrap();
+        let hash = hash_key(&self.map, key);
+        let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, &map_entry);
         Some((key, iter))
     }
@@ -3277,13 +3355,15 @@ impl<Key, Value, State> ExactSizeIterator for KeyValuesMut<'_, Key, Value, State
 where
     Key: Eq + Hash,
     State: BuildHasher,
-{}
+{
+}
 
 impl<Key, Value, State> FusedIterator for KeyValuesMut<'_, Key, Value, State>
 where
     Key: Eq + Hash,
     State: BuildHasher,
-{}
+{
+}
 
 impl<'map, Key, Value, State> Iterator for KeyValuesMut<'map, Key, Value, State>
 where
@@ -3294,8 +3374,8 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.iter.next()?;
-        let hash = KeyHash::new(&key, self.map.hasher());
-        let map_entry = self.map.get(&hash).unwrap();
+        let hash = hash_key(&self.map, key);
+        let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, &map_entry);
         Some((key, iter))
     }
@@ -3451,6 +3531,74 @@ impl<'map, Key, Value> Iterator for ValuesMut<'map, Key, Value> {
     }
 }
 
+/// Computes the hash value of the given key.
+fn hash_key<Key, KeyQuery, Value, State>(
+    map: &HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    key: &KeyQuery,
+) -> u64
+where
+    KeyQuery: ?Sized + Eq + Hash,
+    State: BuildHasher,
+{
+    let mut hasher = map.hasher().build_hasher();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn raw_entry<'map, Key, KeyQuery, Value, State>(
+    keys: &VecList<Key>,
+    map: &'map HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    hash: u64,
+    key: &KeyQuery,
+) -> Option<(&'map Index<Key>, &'map MapEntry<Key, Value>)>
+where
+    Key: Borrow<KeyQuery> + Eq + Hash,
+    KeyQuery: ?Sized + Eq + Hash,
+    State: BuildHasher,
+{
+    // TODO(https://github.com/rust-lang/rust/issues/56158): Avoids segmentation fault.
+    if map.capacity() == 0 {
+        return None;
+    }
+
+    map.raw_entry().search_bucket(hash, |&key_index| {
+        let existing_key = keys.get(key_index).unwrap();
+        let eq = key == existing_key.borrow();
+        eq
+    })
+}
+
+fn raw_entry_mut<'map, Key, KeyQuery, Value, State>(
+    keys: &VecList<Key>,
+    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    hash: u64,
+    key: &KeyQuery,
+) -> RawEntryMut<'map, Index<Key>, MapEntry<Key, Value>, State>
+where
+    Key: Borrow<KeyQuery> + Eq + Hash,
+    KeyQuery: ?Sized + Eq + Hash,
+    State: BuildHasher,
+{
+    map.raw_entry_mut().search_bucket(hash, |&key_index| {
+        let existing_key = keys.get(key_index).unwrap();
+        key == existing_key.borrow()
+    })
+}
+
+fn raw_entry_mut_empty<'map, Key, KeyQuery, Value, State>(
+    keys: &VecList<Key>,
+    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    hash: u64,
+) -> RawEntryMut<'map, Index<Key>, MapEntry<Key, Value>, State>
+where
+    Key: Borrow<KeyQuery> + Eq + Hash,
+    KeyQuery: ?Sized + Eq + Hash,
+    State: BuildHasher,
+{
+    map.raw_entry_mut()
+        .search_bucket(hash, |&key_index| keys.get(key_index).is_none())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -3459,7 +3607,6 @@ mod test {
     fn test_bounds() {
         fn check_bounds<Type: Send + Sync>() {}
 
-        check_bounds::<Entry<'static, (), ()>>();
         check_bounds::<EntryValues<'static, (), ()>>();
         check_bounds::<EntryValuesDrain<'static, (), ()>>();
         check_bounds::<EntryValuesMut<'static, (), ()>>();
@@ -3470,10 +3617,39 @@ mod test {
         check_bounds::<KeyValuesEntryDrain<'static, (), ()>>();
         check_bounds::<KeyValuesMut<'static, (), ()>>();
         check_bounds::<ListOrderedMultimap<(), ()>>();
-        check_bounds::<OccupiedEntry<'static, (), ()>>();
-        check_bounds::<VacantEntry<'static, (), ()>>();
         check_bounds::<Values<'static, (), ()>>();
         check_bounds::<ValuesMut<'static, (), ()>>();
+    }
+
+    #[test]
+    fn test_collision() {
+        struct TestBuildHasher;
+
+        impl BuildHasher for TestBuildHasher {
+            type Hasher = TestHasher;
+
+            fn build_hasher(&self) -> Self::Hasher {
+                TestHasher
+            }
+        }
+
+        struct TestHasher;
+
+        impl Hasher for TestHasher {
+            fn finish(&self) -> u64 {
+                0
+            }
+
+            fn write(&mut self, _: &[u8]) {}
+        }
+
+        let mut map = ListOrderedMultimap::with_hasher(TestBuildHasher);
+
+        map.insert("key1", "value1");
+        assert_eq!(map.get(&"key1"), Some(&"value1"));
+
+        map.insert("key2", "value2");
+        assert_eq!(map.get(&"key2"), Some(&"value2"));
     }
 
     #[test]
@@ -3769,9 +3945,9 @@ mod test {
 
         let iter = map.iter();
         assert_eq!(
-            format!("{:?}", iter),
-            r#"Iter([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
-        );
+                format!("{:?}", iter),
+                r#"Iter([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
+            );
     }
 
     #[test]
@@ -3825,9 +4001,9 @@ mod test {
 
         let iter = map.iter_mut();
         assert_eq!(
-            format!("{:?}", iter),
-            r#"IterMut([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
-        );
+                format!("{:?}", iter),
+                r#"IterMut([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
+            );
     }
 
     #[test]
@@ -3923,9 +4099,9 @@ mod test {
 
         let iter = map.pairs();
         assert_eq!(
-            format!("{:?}", iter),
-            r#"KeyValues([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
-        );
+                format!("{:?}", iter),
+                r#"KeyValues([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+            );
     }
 
     #[test]
@@ -3965,9 +4141,9 @@ mod test {
 
         let iter = map.drain_pairs();
         assert_eq!(
-            format!("{:?}", iter),
-            r#"KeyValuesDrain([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
-        );
+                format!("{:?}", iter),
+                r#"KeyValuesDrain([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+            );
     }
 
     #[test]
@@ -4151,9 +4327,9 @@ mod test {
 
         let iter = map.pairs_mut();
         assert_eq!(
-            format!("{:?}", iter),
-            r#"KeyValuesMut([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
-        );
+                format!("{:?}", iter),
+                r#"KeyValuesMut([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+            );
     }
 
     #[test]
@@ -4754,6 +4930,10 @@ mod test {
         map.append("key1", "value4");
 
         map.pack_to(5, 5);
+
+        assert_eq!(map.get(&"key1"), Some(&"value1"));
+        assert_eq!(map.get(&"key2"), Some(&"value2"));
+
         assert_eq!(map.keys_capacity(), 5);
         assert_eq!(map.keys_len(), 2);
         assert_eq!(map.values_capacity(), 5);

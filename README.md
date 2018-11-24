@@ -7,8 +7,7 @@ Currently, this crate contains a single type `ListOrderedMultimap`. This is a mu
 multiple values can be associated with a given key, but it also maintains insertion order across all
 keys and values.
 
-Nightly is required due to the use of the hashmap raw entry API. Due to the design of the multimap,
-the implementation is significantly simplified due to the power the raw entry APi gives.
+Nightly is required due to the use of the hashmap raw entry API.
 
 [Documentation](https://docs.rs/ordered-multimap/)
 

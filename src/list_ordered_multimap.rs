@@ -808,7 +808,7 @@ where
             let key = self.keys.get(key_index).unwrap();
             let hash = hash_key(&map, key);
 
-            match map.raw_entry_mut().search_bucket(hash, |_| false) {
+            match map.raw_entry_mut().from_hash(hash, |_| false) {
                 RawEntryMut::Vacant(entry) => {
                     entry.insert_hashed_nocheck(hash, key_index, map_entry);
                 }
@@ -3556,7 +3556,7 @@ where
         return None;
     }
 
-    map.raw_entry().search_bucket(hash, |&key_index| {
+    map.raw_entry().from_hash(hash, |&key_index| {
         let existing_key = keys.get(key_index).unwrap();
         key == existing_key.borrow()
     })
@@ -3573,7 +3573,7 @@ where
     KeyQuery: ?Sized + Eq + Hash,
     State: BuildHasher,
 {
-    map.raw_entry_mut().search_bucket(hash, |&key_index| {
+    map.raw_entry_mut().from_hash(hash, |&key_index| {
         let existing_key = keys.get(key_index).unwrap();
         key == existing_key.borrow()
     })
@@ -3590,7 +3590,7 @@ where
     State: BuildHasher,
 {
     map.raw_entry_mut()
-        .search_bucket(hash, |&key_index| keys.get(key_index).is_none())
+        .from_hash(hash, |&key_index| keys.get(key_index).is_none())
 }
 
 #[cfg(test)]

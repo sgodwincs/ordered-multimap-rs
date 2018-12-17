@@ -276,20 +276,18 @@ where
         if !self.contains_key(&key) {
             Entry::Vacant(VacantEntry {
                 hash,
-                key: key,
+                key,
                 keys: &mut self.keys,
                 map: &mut self.map,
                 values: &mut self.values,
             })
         } else {
             match raw_entry_mut(&self.keys, &mut self.map, hash, &key) {
-                Occupied(entry) => {
-                    return Entry::Occupied(OccupiedEntry {
-                        entry,
-                        keys: &mut self.keys,
-                        values: &mut self.values,
-                    });
-                }
+                Occupied(entry) => Entry::Occupied(OccupiedEntry {
+                    entry,
+                    keys: &mut self.keys,
+                    values: &mut self.values,
+                }),
                 _ => panic!("expected occupied entry"),
             }
         }
@@ -798,19 +796,15 @@ where
         let mut map = HashMap::with_capacity_and_hasher(keys_minimum_capacity, State::default());
 
         for value_entry in self.values.iter_mut() {
-            value_entry.key_index = *key_map.get(&value_entry.key_index).unwrap();
-            value_entry.next_index = value_entry
-                .next_index
-                .map(|index| *value_map.get(&index).unwrap());
-            value_entry.previous_index = value_entry
-                .previous_index
-                .map(|index| *value_map.get(&index).unwrap());
+            value_entry.key_index = key_map[&value_entry.key_index];
+            value_entry.next_index = value_entry.next_index.map(|index| value_map[&index]);
+            value_entry.previous_index = value_entry.previous_index.map(|index| value_map[&index]);
         }
 
         for (key_index, mut map_entry) in self.map.drain() {
-            map_entry.head_index = *value_map.get(&map_entry.head_index).unwrap();
-            map_entry.tail_index = *value_map.get(&map_entry.tail_index).unwrap();
-            let key_index = *key_map.get(&key_index).unwrap();
+            map_entry.head_index = value_map[&map_entry.head_index];
+            map_entry.tail_index = value_map[&map_entry.tail_index];
+            let key_index = key_map[&key_index];
             let key = self.keys.get(key_index).unwrap();
             let hash = hash_key(&map, key);
 
@@ -1978,6 +1972,7 @@ pub struct OccupiedEntry<'map, Key, Value> {
     values: &'map mut VecList<ValueEntry<Key, Value>>,
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
     /// # Examples
     ///
@@ -3563,8 +3558,7 @@ where
 
     map.raw_entry().search_bucket(hash, |&key_index| {
         let existing_key = keys.get(key_index).unwrap();
-        let eq = key == existing_key.borrow();
-        eq
+        key == existing_key.borrow()
     })
 }
 

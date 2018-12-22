@@ -11,4 +11,4 @@ repository = "https://github.com/sgodwincs/ordered-multimap-rs"
 version = "0.1.0"
 
 [dependencies]
-dlv-list = "0.2.0"
+dlv-list = "0.2.1"

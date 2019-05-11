@@ -2,8 +2,7 @@ use dlv_list::{
     Drain as VecListDrain, Index, Iter as VecListIter, IterMut as VecListIterMut, VecList,
 };
 use std::borrow::Borrow;
-use std::collections::hash_map::{RandomState, RawEntryMut, RawOccupiedEntryMut};
-use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug, Formatter};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::iter::{FromIterator, FusedIterator};
@@ -11,17 +10,46 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use hashbrown::hash_map::{RawEntryMut, RawOccupiedEntryMut};
+use hashbrown::HashMap;
+
 #[derive(Clone)]
 pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
+    build_hasher: State,
+
     /// The list of the keys in the multimap. This is ordered by time of insertion.
     keys: VecList<Key>,
 
     /// The map from hashes of keys to the indices of their values in the value list. The list of
     /// the indices is ordered by time of insertion.
-    map: HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    map: HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     /// The list of the values in the multimap. This is ordered by time of insertion.
     values: VecList<ValueEntry<Key, Value>>,
+}
+
+#[derive(Clone, Debug)]
+struct DummyState;
+
+impl BuildHasher for DummyState {
+    type Hasher = DummyHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        DummyHasher
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DummyHasher;
+
+impl Hasher for DummyHasher {
+    fn finish(&self) -> u64 {
+        unimplemented!();
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unimplemented!();
+    }
 }
 
 impl<Key, Value> ListOrderedMultimap<Key, Value, RandomState>
@@ -67,8 +95,9 @@ where
         value_capacity: usize,
     ) -> ListOrderedMultimap<Key, Value, RandomState> {
         ListOrderedMultimap {
+            build_hasher: RandomState::new(),
             keys: VecList::with_capacity(key_capacity),
-            map: HashMap::with_capacity_and_hasher(key_capacity, RandomState::new()),
+            map: HashMap::with_capacity_and_hasher(key_capacity, DummyState),
             values: VecList::with_capacity(value_capacity),
         }
     }
@@ -104,8 +133,9 @@ where
     pub fn append(&mut self, key: Key, value: Value) -> bool {
         use self::RawEntryMut::*;
 
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
         let entry = raw_entry_mut(&self.keys, &mut self.map, hash, &key);
+        let build_hasher = &self.build_hasher;
 
         match entry {
             Occupied(mut entry) => {
@@ -125,7 +155,11 @@ where
                 let key_index = self.keys.push_back(key);
                 let value_entry = ValueEntry::new(key_index, value);
                 let index = self.values.push_back(value_entry);
-                entry.insert_hashed_nocheck(hash, key_index, MapEntry::new(index));
+                let keys = &self.keys;
+                entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
+                    let key = keys.get(key_index).unwrap();
+                    hash_key(build_hasher, key)
+                });
                 false
             }
         }
@@ -212,7 +246,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
         raw_entry(&self.keys, &self.map, hash, key).is_some()
     }
 
@@ -243,6 +277,7 @@ where
     /// ```
     pub fn drain_pairs(&mut self) -> KeyValuesDrain<Key, Value, State> {
         KeyValuesDrain {
+            build_hasher: &self.build_hasher,
             keys: &self.keys as *const _,
             dropped: Arc::new(AtomicUsize::new(self.keys_len())),
             iter: self.keys.drain(),
@@ -268,13 +303,14 @@ where
     pub fn entry(&mut self, key: Key) -> Entry<Key, Value, State> {
         use self::RawEntryMut::*;
 
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
 
         // TODO: This ugliness arises from borrow checking issues which seems to happen when the
         // vacant entry is created in the match block further below for `Vacant` even though it
         // should be perfectly safe. Is there a better way to do this?
         if !self.contains_key(&key) {
             Entry::Vacant(VacantEntry {
+                build_hasher: &self.build_hasher,
                 hash,
                 key,
                 keys: &mut self.keys,
@@ -316,7 +352,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
 
         match raw_entry(&self.keys, &self.map, hash, key) {
             Some((_, map_entry)) => map_entry.length,
@@ -381,7 +417,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
         let (_, map_entry) = raw_entry(&self.keys, &self.map, hash, key)?;
         self.values
             .get(map_entry.head_index)
@@ -412,7 +448,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
 
         match raw_entry(&self.keys, &self.map, hash, key) {
             Some((_, map_entry)) => EntryValues::from_map_entry(&self.values, &map_entry),
@@ -450,7 +486,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
 
         match raw_entry(&self.keys, &self.map, hash, key) {
             Some((_, map_entry)) => EntryValuesMut::from_map_entry(&mut self.values, &map_entry),
@@ -484,7 +520,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
         let (_, map_entry) = raw_entry(&self.keys, &self.map, hash, key)?;
         self.values
             .get_mut(map_entry.head_index)
@@ -502,7 +538,7 @@ where
     /// let hasher = map.hasher();
     /// ```
     pub fn hasher(&self) -> &State {
-        self.map.hasher()
+        &self.build_hasher
     }
 
     /// Inserts the key-value pair into the multimap and returns the first value, by insertion
@@ -574,8 +610,9 @@ where
     pub fn insert_all(&mut self, key: Key, value: Value) -> EntryValuesDrain<Key, Value> {
         use self::RawEntryMut::*;
 
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
         let entry = raw_entry_mut(&self.keys, &mut self.map, hash, &key);
+        let build_hasher = &self.build_hasher;
 
         match entry {
             Occupied(mut entry) => {
@@ -591,7 +628,11 @@ where
                 let key_index = self.keys.push_back(key);
                 let value_entry = ValueEntry::new(key_index, value);
                 let index = self.values.push_back(value_entry);
-                entry.insert_hashed_nocheck(hash, key_index, MapEntry::new(index));
+                let keys = &self.keys;
+                entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
+                    let key = keys.get(key_index).unwrap();
+                    hash_key(build_hasher, key)
+                });
                 EntryValuesDrain::empty(&mut self.values)
             }
         }
@@ -793,7 +834,8 @@ where
 
         let key_map = self.keys.pack_to(keys_minimum_capacity);
         let value_map = self.values.pack_to(values_minimum_capacity);
-        let mut map = HashMap::with_capacity_and_hasher(keys_minimum_capacity, State::default());
+        let mut map = HashMap::with_capacity_and_hasher(keys_minimum_capacity, DummyState);
+        let build_hasher = &self.build_hasher;
 
         for value_entry in self.values.iter_mut() {
             value_entry.key_index = key_map[&value_entry.key_index];
@@ -806,11 +848,15 @@ where
             map_entry.tail_index = value_map[&map_entry.tail_index];
             let key_index = key_map[&key_index];
             let key = self.keys.get(key_index).unwrap();
-            let hash = hash_key(&map, key);
+            let hash = hash_key(&self.build_hasher, key);
 
             match map.raw_entry_mut().from_hash(hash, |_| false) {
                 RawEntryMut::Vacant(entry) => {
-                    entry.insert_hashed_nocheck(hash, key_index, map_entry);
+                    let keys = &self.keys;
+                    entry.insert_with_hasher(hash, key_index, map_entry, |&key_index| {
+                        let key = keys.get(key_index).unwrap();
+                        hash_key(build_hasher, key)
+                    });
                 }
                 _ => panic!("expected vacant entry"),
             }
@@ -873,6 +919,7 @@ where
     /// ```
     pub fn pairs(&self) -> KeyValues<Key, Value, State> {
         KeyValues {
+            build_hasher: &self.build_hasher,
             keys: &self.keys,
             iter: self.keys.iter(),
             map: &self.map,
@@ -904,6 +951,7 @@ where
     /// ```
     pub fn pairs_mut(&mut self) -> KeyValuesMut<Key, Value, State> {
         KeyValuesMut {
+            build_hasher: &self.build_hasher,
             keys: &self.keys,
             iter: self.keys.iter(),
             map: &self.map,
@@ -948,7 +996,7 @@ where
         let key_wrapper = match value_entry.previous_index {
             Some(previous_index) => {
                 let key = self.keys.get(value_entry.key_index).unwrap();
-                let hash = hash_key(&self.map, &key);
+                let hash = hash_key(&self.build_hasher, &key);
 
                 let mut entry = match raw_entry_mut(&self.keys, &mut self.map, hash, key) {
                     RawEntryMut::Occupied(entry) => entry,
@@ -965,7 +1013,7 @@ where
             }
             None => {
                 let key = self.keys.remove(value_entry.key_index).unwrap();
-                let hash = hash_key(&self.map, &key);
+                let hash = hash_key(&self.build_hasher, &key);
 
                 match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
                     RawEntryMut::Occupied(entry) => {
@@ -1018,7 +1066,7 @@ where
         let key_wrapper = match value_entry.next_index {
             Some(next_index) => {
                 let key = self.keys.get(value_entry.key_index).unwrap();
-                let hash = hash_key(&self.map, &key);
+                let hash = hash_key(&self.build_hasher, &key);
 
                 let mut entry = match raw_entry_mut(&self.keys, &mut self.map, hash, key) {
                     RawEntryMut::Occupied(entry) => entry,
@@ -1035,7 +1083,7 @@ where
             }
             None => {
                 let key = self.keys.remove(value_entry.key_index).unwrap();
-                let hash = hash_key(&self.map, &key);
+                let hash = hash_key(&self.build_hasher, &key);
 
                 match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
                     RawEntryMut::Occupied(entry) => {
@@ -1120,7 +1168,7 @@ where
     {
         use self::RawEntryMut::*;
 
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
         let entry = raw_entry_mut(&self.keys, &mut self.map, hash, key);
 
         match entry {
@@ -1207,7 +1255,7 @@ where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
     {
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(&self.build_hasher, &key);
         let entry = raw_entry_mut(&self.keys, &mut self.map, hash, key);
 
         match entry {
@@ -1242,8 +1290,25 @@ where
     /// assert!(map.keys_capacity() >= 11);
     /// ```
     pub fn reserve_keys(&mut self, additional_capacity: usize) {
+        if self.keys.capacity() - self.keys.len() >= additional_capacity {
+            return;
+        }
+
+        let capacity = self.map.capacity() + additional_capacity;
+        let mut map = HashMap::with_capacity_and_hasher(capacity, DummyState);
+
+        for (key_index, map_entry) in self.map.drain() {
+            let key = self.keys.get(key_index).unwrap();
+            let hash = hash_key(&self.build_hasher, key);
+            let entry = match raw_entry_mut_empty(&self.keys, &mut map, hash) {
+                RawEntryMut::Vacant(entry) => entry,
+                _ => panic!("expected vacant entry"),
+            };
+            entry.insert_hashed_nocheck(hash, key_index, map_entry);
+        }
+
         self.keys.reserve(additional_capacity);
-        self.map.reserve(additional_capacity);
+        self.map = map;
     }
 
     /// Reserves additional capacity such that more values can be stored in the multimap.
@@ -1298,6 +1363,7 @@ where
         Function: FnMut(&Key, &mut Value) -> bool,
     {
         ListOrderedMultimap::retain_helper(
+            &self.build_hasher,
             &mut self.keys,
             &mut self.map,
             &mut self.values,
@@ -1307,8 +1373,9 @@ where
 
     /// Helper function for [`ListOrderedMultimap::retain`] to deal with borrowing issues.
     fn retain_helper<'map, Function>(
+        build_hasher: &'map State,
         keys: &'map mut VecList<Key>,
-        map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+        map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
         values: &'map mut VecList<ValueEntry<Key, Value>>,
         mut function: Function,
     ) where
@@ -1319,7 +1386,7 @@ where
             let key = keys.get(value_entry.key_index).unwrap();
 
             if !function(key, &mut value_entry.value) {
-                let hash = hash_key(&map, key);
+                let hash = hash_key(build_hasher, key);
                 let mut entry = match raw_entry_mut(keys, map, hash, key) {
                     RawEntryMut::Occupied(entry) => entry,
                     _ => panic!("expected occupied entry in internal map"),
@@ -1482,8 +1549,9 @@ where
         state: State,
     ) -> ListOrderedMultimap<Key, Value, State> {
         ListOrderedMultimap {
+            build_hasher: state,
             keys: VecList::with_capacity(key_capacity),
-            map: HashMap::with_capacity_and_hasher(key_capacity, state),
+            map: HashMap::with_capacity_and_hasher(key_capacity, DummyState),
             values: VecList::with_capacity(value_capacity),
         }
     }
@@ -1506,8 +1574,9 @@ where
     /// ```
     pub fn with_hasher(state: State) -> ListOrderedMultimap<Key, Value, State> {
         ListOrderedMultimap {
+            build_hasher: state,
             keys: VecList::new(),
-            map: HashMap::with_hasher(state),
+            map: HashMap::with_hasher(DummyState),
             values: VecList::new(),
         }
     }
@@ -1530,8 +1599,9 @@ where
 {
     fn default() -> Self {
         ListOrderedMultimap {
+            build_hasher: RandomState::new(),
             keys: VecList::new(),
-            map: HashMap::with_hasher(RandomState::new()),
+            map: HashMap::with_hasher(DummyState),
             values: VecList::new(),
         }
     }
@@ -2362,6 +2432,8 @@ where
 
 /// A view into a vacant entry in the multimap.
 pub struct VacantEntry<'map, Key, Value, State = RandomState> {
+    build_hasher: &'map State,
+
     /// The hash of the key for the entry.
     hash: u64,
 
@@ -2371,7 +2443,7 @@ pub struct VacantEntry<'map, Key, Value, State = RandomState> {
     keys: &'map mut VecList<Key>,
 
     /// Reference to the multimap.
-    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     values: &'map mut VecList<ValueEntry<Key, Value>>,
 }
@@ -2397,6 +2469,7 @@ where
     /// assert_eq!(entry.insert("value"), &"value");
     /// ```
     pub fn insert(self, value: Value) -> &'map mut Value {
+        let build_hasher = self.build_hasher;
         let entry = match raw_entry_mut(self.keys, self.map, self.hash, &self.key) {
             RawEntryMut::Vacant(entry) => entry,
             _ => panic!("expected vacant entry"),
@@ -2405,7 +2478,11 @@ where
         let value_entry = ValueEntry::new(key_index, value);
         let index = self.values.push_back(value_entry);
         let map_entry = MapEntry::new(index);
-        entry.insert_hashed_nocheck(self.hash, key_index, map_entry);
+        let keys = &self.keys;
+        entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
+            let key = keys.get(key_index).unwrap();
+            hash_key(build_hasher, key)
+        });
 
         &mut self.values.get_mut(index).unwrap().value
     }
@@ -2427,6 +2504,7 @@ where
     /// assert_eq!(entry.get(), &"value");
     /// ```
     pub fn insert_entry(self, value: Value) -> OccupiedEntry<'map, Key, Value> {
+        let build_hasher = self.build_hasher;
         let entry = match raw_entry_mut(self.keys, self.map, self.hash, &self.key) {
             RawEntryMut::Vacant(entry) => entry,
             _ => panic!("expected vacant entry"),
@@ -2435,7 +2513,11 @@ where
         let value_entry = ValueEntry::new(key_index, value);
         let index = self.values.push_back(value_entry);
         let map_entry = MapEntry::new(index);
-        entry.insert_hashed_nocheck(self.hash, key_index, map_entry);
+        let keys = &self.keys;
+        entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
+            let key = keys.get(key_index).unwrap();
+            hash_key(build_hasher, key)
+        });
 
         let key = self.keys.get(key_index).unwrap();
         let entry = match raw_entry_mut(self.keys, self.map, self.hash, key) {
@@ -2953,6 +3035,8 @@ impl<'map, Key, Value> Iterator for IterMut<'map, Key, Value> {
 /// An iterator that yields immutable references to all keys and their value iterators. The order of
 /// the yielded items is always in the order the keys were first inserted.
 pub struct KeyValues<'map, Key, Value, State = RandomState> {
+    build_hasher: &'map State,
+
     // The list of the keys in the map. This is ordered by time of insertion.
     keys: &'map VecList<Key>,
 
@@ -2960,7 +3044,7 @@ pub struct KeyValues<'map, Key, Value, State = RandomState> {
     iter: VecListIter<'map, Key>,
 
     /// The internal mapping from key hashes to associated value indices.
-    map: &'map HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    map: &'map HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
     values: &'map VecList<ValueEntry<Key, Value>>,
@@ -2969,6 +3053,7 @@ pub struct KeyValues<'map, Key, Value, State = RandomState> {
 impl<'map, Key, Value, State> Clone for KeyValues<'map, Key, Value, State> {
     fn clone(&self) -> KeyValues<'map, Key, Value, State> {
         KeyValues {
+            build_hasher: self.build_hasher,
             keys: self.keys,
             iter: self.iter.clone(),
             map: self.map,
@@ -2997,7 +3082,7 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let key = self.iter.next_back()?;
-        let hash = hash_key(&self.map, key);
+        let hash = hash_key(self.build_hasher, key);
         let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValues::from_map_entry(&self.values, &map_entry);
         Some((key, iter))
@@ -3027,7 +3112,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.iter.next()?;
-        let hash = hash_key(&self.map, key);
+        let hash = hash_key(self.build_hasher, key);
         let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValues::from_map_entry(&self.values, &map_entry);
         Some((key, iter))
@@ -3045,6 +3130,8 @@ where
     Key: Eq + Hash,
     State: BuildHasher,
 {
+    build_hasher: &'map State,
+
     /// The number of keys whose value drain iterators have yet to have been fully consumed. This is
     /// needed to make this type thread-safe.
     dropped: Arc<AtomicUsize>,
@@ -3056,7 +3143,7 @@ where
     keys: *const VecList<Key>,
 
     /// The internal mapping from key hashes to associated value indices.
-    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
     values: *mut VecList<ValueEntry<Key, Value>>,
@@ -3070,6 +3157,7 @@ where
     /// Creates an iterator that yields immutable references to all keys and their value iterators.
     pub fn iter(&self) -> KeyValues<Key, Value, State> {
         KeyValues {
+            build_hasher: self.build_hasher,
             keys: unsafe { &*self.keys },
             iter: self.iter.iter(),
             map: self.map,
@@ -3098,7 +3186,7 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let key = self.iter.next_back()?;
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(self.build_hasher, &key);
         let entry = match raw_entry_mut_empty(unsafe { &*self.keys }, self.map, hash) {
             RawEntryMut::Occupied(entry) => entry,
             _ => panic!("expected occupied entry in internal map"),
@@ -3146,7 +3234,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.iter.next()?;
-        let hash = hash_key(&self.map, &key);
+        let hash = hash_key(self.build_hasher, &key);
         let entry = match raw_entry_mut_empty(unsafe { &*self.keys }, self.map, hash) {
             RawEntryMut::Occupied(entry) => entry,
             _ => panic!("expected occupied entry in internal map"),
@@ -3189,6 +3277,7 @@ pub struct KeyValuesEntryDrain<'map, Key, Value> {
     /// The number of keys whose value drain iterators have yet to have been fully consumed. This is
     /// needed to make this type thread-safe. This originates from [`KeyValuesDrain`].
     dropped: Arc<AtomicUsize>,
+
     /// The first index of the values not yet yielded.
     head_index: Option<Index<ValueEntry<Key, Value>>>,
 
@@ -3294,6 +3383,8 @@ impl<Key, Value> Iterator for KeyValuesEntryDrain<'_, Key, Value> {
 }
 
 pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
+    build_hasher: &'map State,
+
     // The list of the keys in the map. This is ordered by time of insertion.
     keys: &'map VecList<Key>,
 
@@ -3301,7 +3392,7 @@ pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
     iter: VecListIter<'map, Key>,
 
     /// The internal mapping from key hashes to associated value indices.
-    map: &'map HashMap<Index<Key>, MapEntry<Key, Value>, State>,
+    map: &'map HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     /// The list of the values in the map. This is ordered by time of insertion.
     values: *mut VecList<ValueEntry<Key, Value>>,
@@ -3311,6 +3402,7 @@ impl<Key, Value, State> KeyValuesMut<'_, Key, Value, State> {
     /// Creates an iterator that yields mutable references to all key-value pairs of a multimap.
     pub fn iter(&self) -> KeyValues<Key, Value, State> {
         KeyValues {
+            build_hasher: self.build_hasher,
             keys: self.keys,
             iter: self.iter.clone(),
             map: self.map,
@@ -3339,7 +3431,7 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         let key = self.iter.next_back()?;
-        let hash = hash_key(&self.map, key);
+        let hash = hash_key(self.build_hasher, key);
         let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, &map_entry);
         Some((key, iter))
@@ -3369,7 +3461,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = self.iter.next()?;
-        let hash = hash_key(&self.map, key);
+        let hash = hash_key(self.build_hasher, key);
         let (_, map_entry) = raw_entry(&self.keys, self.map, hash, key).unwrap();
         let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, &map_entry);
         Some((key, iter))
@@ -3527,15 +3619,12 @@ impl<'map, Key, Value> Iterator for ValuesMut<'map, Key, Value> {
 }
 
 /// Computes the hash value of the given key.
-fn hash_key<Key, KeyQuery, Value, State>(
-    map: &HashMap<Index<Key>, MapEntry<Key, Value>, State>,
-    key: &KeyQuery,
-) -> u64
+fn hash_key<KeyQuery, State>(state: &State, key: &KeyQuery) -> u64
 where
     KeyQuery: ?Sized + Eq + Hash,
     State: BuildHasher,
 {
-    let mut hasher = map.hasher().build_hasher();
+    let mut hasher = state.build_hasher();
     key.hash(&mut hasher);
     hasher.finish()
 }

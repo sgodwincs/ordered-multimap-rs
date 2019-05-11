@@ -12,3 +12,4 @@ version = "0.2.1"
 
 [dependencies]
 dlv-list = "0.2.1"
+hashbrown = "0.3.0"

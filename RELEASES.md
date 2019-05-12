@@ -1,3 +1,7 @@
+# 0.2.2
+
+ - Fix crate as it was broken from std's migration to hashbrown.
+
 # 0.2.1
 
  - Update dependency on `dlv-list` which will reduce memory size of `ListOrderedMultimap` by 48

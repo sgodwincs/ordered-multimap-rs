@@ -1300,7 +1300,7 @@ where
         for (key_index, map_entry) in self.map.drain() {
             let key = self.keys.get(key_index).unwrap();
             let hash = hash_key(&self.build_hasher, key);
-            let entry = match raw_entry_mut_empty(&self.keys, &mut map, hash) {
+            let entry = match raw_entry_mut(&self.keys, &mut map, hash, key) {
                 RawEntryMut::Vacant(entry) => entry,
                 _ => panic!("expected vacant entry"),
             };

@@ -1,6 +1,8 @@
 use dlv_list::{
     Drain as VecListDrain, Index, Iter as VecListIter, IterMut as VecListIterMut, VecList,
 };
+use hashbrown::hash_map::{RawEntryMut, RawOccupiedEntryMut};
+use hashbrown::HashMap;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug, Formatter};
@@ -10,46 +12,24 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use hashbrown::hash_map::{RawEntryMut, RawOccupiedEntryMut};
-use hashbrown::HashMap;
-
 #[derive(Clone)]
 pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
+    /// The hasher builder that constructs new hashers for hashing keys. We have to keep this
+    /// separate from the hashmap itself as we need to be able to access it when the hashmap keys
+    /// are reallocated due to reallocation. We cannot use the hash of the actual keys in the map
+    /// as those hashes are not representative of what hash they truly represent.
     build_hasher: State,
 
     /// The list of the keys in the multimap. This is ordered by time of insertion.
     keys: VecList<Key>,
 
-    /// The map from hashes of keys to the indices of their values in the value list. The list of
-    /// the indices is ordered by time of insertion.
+    /// The map from indices of keys to the indices of their values in the value list. The list of
+    /// the indices is ordered by time of insertion. We never use hasher of the hashmap explicitly
+    /// here, we instead use [`ListOrderedMultimap::build_hasher`].
     map: HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     /// The list of the values in the multimap. This is ordered by time of insertion.
     values: VecList<ValueEntry<Key, Value>>,
-}
-
-#[derive(Clone, Debug)]
-struct DummyState;
-
-impl BuildHasher for DummyState {
-    type Hasher = DummyHasher;
-
-    fn build_hasher(&self) -> Self::Hasher {
-        DummyHasher
-    }
-}
-
-#[derive(Clone, Debug)]
-struct DummyHasher;
-
-impl Hasher for DummyHasher {
-    fn finish(&self) -> u64 {
-        unimplemented!();
-    }
-
-    fn write(&mut self, _: &[u8]) {
-        unimplemented!();
-    }
 }
 
 impl<Key, Value> ListOrderedMultimap<Key, Value, RandomState>
@@ -1288,6 +1268,7 @@ where
     ///
     /// map.reserve_keys(10);
     /// assert!(map.keys_capacity() >= 11);
+    /// assert_eq!(map.get(&"key"), Some(&"value"));
     /// ```
     pub fn reserve_keys(&mut self, additional_capacity: usize) {
         if self.keys.capacity() - self.keys.len() >= additional_capacity {
@@ -2432,6 +2413,7 @@ where
 
 /// A view into a vacant entry in the multimap.
 pub struct VacantEntry<'map, Key, Value, State = RandomState> {
+    /// The builder hasher for the map, kept separately for mutability concerns.
     build_hasher: &'map State,
 
     /// The hash of the key for the entry.
@@ -3035,6 +3017,7 @@ impl<'map, Key, Value> Iterator for IterMut<'map, Key, Value> {
 /// An iterator that yields immutable references to all keys and their value iterators. The order of
 /// the yielded items is always in the order the keys were first inserted.
 pub struct KeyValues<'map, Key, Value, State = RandomState> {
+    /// The builder hasher for the map, kept separately for mutability concerns.
     build_hasher: &'map State,
 
     // The list of the keys in the map. This is ordered by time of insertion.
@@ -3130,6 +3113,7 @@ where
     Key: Eq + Hash,
     State: BuildHasher,
 {
+    /// The builder hasher for the map, kept separately for mutability concerns.
     build_hasher: &'map State,
 
     /// The number of keys whose value drain iterators have yet to have been fully consumed. This is
@@ -3383,6 +3367,7 @@ impl<Key, Value> Iterator for KeyValuesEntryDrain<'_, Key, Value> {
 }
 
 pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
+    /// The builder hasher for the map, kept separately for mutability concerns.
     build_hasher: &'map State,
 
     // The list of the keys in the map. This is ordered by time of insertion.
@@ -3615,6 +3600,32 @@ impl<'map, Key, Value> Iterator for ValuesMut<'map, Key, Value> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.0.size_hint()
+    }
+}
+
+/// Dummy builder hasher that is not meant to be used. It is simply a placeholder.
+#[derive(Clone, Debug)]
+struct DummyState;
+
+impl BuildHasher for DummyState {
+    type Hasher = DummyHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        DummyHasher
+    }
+}
+
+/// Dummy hasher that is not meant to be used. It is simply a placeholder.
+#[derive(Clone, Debug)]
+struct DummyHasher;
+
+impl Hasher for DummyHasher {
+    fn finish(&self) -> u64 {
+        unimplemented!();
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unimplemented!();
     }
 }
 

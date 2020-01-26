@@ -1,3 +1,8 @@
+# 0.2.3
+
+ - Works on stable Rust.
+ - Updated `hashbrown` dependency to `0.6.0`.
+
 # 0.2.2
 
  - Fix crate as it was broken from std's migration to hashbrown.

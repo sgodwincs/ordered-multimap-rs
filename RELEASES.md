@@ -1,3 +1,8 @@
+# 0.2.4
+
+ - Updated `dlv-list` dependency to `0.2.2`.
+ - Updated `hashbrown` dependency to `0.7.0`.
+
 # 0.2.3
 
  - Works on stable Rust.

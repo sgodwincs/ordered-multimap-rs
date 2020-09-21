@@ -2016,7 +2016,7 @@ where
 
 /// A view into an occupied entry in the multimap.
 pub struct OccupiedEntry<'map, Key, Value> {
-    entry: RawOccupiedEntryMut<'map, Index<Key>, MapEntry<Key, Value>>,
+    entry: RawOccupiedEntryMut<'map, Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     keys: &'map mut VecList<Key>,
 

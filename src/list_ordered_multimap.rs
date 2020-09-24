@@ -2016,7 +2016,7 @@ where
 
 /// A view into an occupied entry in the multimap.
 pub struct OccupiedEntry<'map, Key, Value> {
-    entry: RawOccupiedEntryMut<'map, Index<Key>, MapEntry<Key, Value>>,
+    entry: RawOccupiedEntryMut<'map, Index<Key>, MapEntry<Key, Value>, DummyState>,
 
     keys: &'map mut VecList<Key>,
 
@@ -4039,9 +4039,9 @@ mod test {
 
         let iter = map.iter();
         assert_eq!(
-                format!("{:?}", iter),
-                r#"Iter([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
-            );
+            format!("{:?}", iter),
+            r#"Iter([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
+        );
     }
 
     #[test]
@@ -4095,9 +4095,9 @@ mod test {
 
         let iter = map.iter_mut();
         assert_eq!(
-                format!("{:?}", iter),
-                r#"IterMut([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
-            );
+            format!("{:?}", iter),
+            r#"IterMut([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
+        );
     }
 
     #[test]
@@ -4193,9 +4193,9 @@ mod test {
 
         let iter = map.pairs();
         assert_eq!(
-                format!("{:?}", iter),
-                r#"KeyValues([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
-            );
+            format!("{:?}", iter),
+            r#"KeyValues([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+        );
     }
 
     #[test]
@@ -4235,9 +4235,9 @@ mod test {
 
         let iter = map.drain_pairs();
         assert_eq!(
-                format!("{:?}", iter),
-                r#"KeyValuesDrain([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
-            );
+            format!("{:?}", iter),
+            r#"KeyValuesDrain([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+        );
     }
 
     #[test]
@@ -4421,9 +4421,9 @@ mod test {
 
         let iter = map.pairs_mut();
         assert_eq!(
-                format!("{:?}", iter),
-                r#"KeyValuesMut([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
-            );
+            format!("{:?}", iter),
+            r#"KeyValuesMut([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
+        );
     }
 
     #[test]

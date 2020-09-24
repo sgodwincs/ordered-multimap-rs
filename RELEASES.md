@@ -1,3 +1,7 @@
+# 0.3.0
+
+ - Updated `hashbrown` dependency to `0.9.0`.
+
 # 0.2.4
 
  - Updated `dlv-list` dependency to `0.2.2`.

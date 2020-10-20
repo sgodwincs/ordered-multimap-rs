@@ -1,3 +1,8 @@
+# 0.4.0
+
+ - Added crate feature `"serde-1"` for (de)serialization with `serde` version `1`.
+ - Implemented `IntoIterator` of owned key-value pairs for `ListOrderedMultimap`.
+
 # 0.3.0
 
  - Updated `hashbrown` dependency to `0.9.0`.

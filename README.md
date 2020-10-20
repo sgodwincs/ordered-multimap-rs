@@ -14,6 +14,10 @@ keys and values.
 Preliminary benchmarks show that performance is quite decent but more will be required to state
 anything definitive.
 
+# Features
+
+ - `"serde-1"` for (de)serialization with `serde` version `1`.
+
 # TODO
 
 It is planned that a corresponding `SetOrderedMultimap` will also be included in this crate which

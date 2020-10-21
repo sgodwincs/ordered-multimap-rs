@@ -1,6 +1,6 @@
-# 0.4.0
+# 0.3.1
 
- - Added crate feature `"serde-1"` for (de)serialization with `serde` version `1`.
+ - Added crate feature `serde` for (de)serialization.
  - Implemented `IntoIterator` of owned key-value pairs for `ListOrderedMultimap`.
 
 # 0.3.0

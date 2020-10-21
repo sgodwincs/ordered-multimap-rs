@@ -16,7 +16,7 @@ anything definitive.
 
 # Features
 
- - `"serde-1"` for (de)serialization with `serde` version `1`.
+ - `serde` for (de)serialization.
 
 # TODO
 

@@ -5,6 +5,6 @@ matrix:
     - rust: stable
       env: FEATURES=""
     - rust: stable
-      env: FEATURES="serde-1"
+      env: FEATURES="serde"
 script:
   - cargo test --verbose --no-default-features --features "$FEATURES"

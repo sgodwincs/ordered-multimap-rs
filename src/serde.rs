@@ -10,7 +10,7 @@ use crate::ListOrderedMultimap;
 
 impl<K, V, S> Serialize for ListOrderedMultimap<K, V, S>
 where
-    K: Serialize + Hash + Eq,
+    K: Eq + Hash + Serialize,
     V: Serialize,
     S: BuildHasher,
 {
@@ -32,7 +32,7 @@ impl<'de, K, V, S> Visitor<'de> for ListOrderedMultimapVisitor<K, V, S>
 where
     K: Deserialize<'de> + Eq + Hash,
     V: Deserialize<'de>,
-    S: Default + BuildHasher,
+    S: BuildHasher + Default,
 {
     type Value = ListOrderedMultimap<K, V, S>;
 
@@ -60,7 +60,7 @@ impl<'de, K, V, S> Deserialize<'de> for ListOrderedMultimap<K, V, S>
 where
     K: Deserialize<'de> + Eq + Hash,
     V: Deserialize<'de>,
-    S: Default + BuildHasher,
+    S: BuildHasher + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -72,7 +72,7 @@ where
 
 impl<'de, K, V, S, E> IntoDeserializer<'de, E> for ListOrderedMultimap<K, V, S>
 where
-    K: IntoDeserializer<'de, E> + Eq + Hash + Clone,
+    K: Clone + Eq + Hash + IntoDeserializer<'de, E>,
     V: IntoDeserializer<'de, E>,
     S: BuildHasher,
     E: Error,

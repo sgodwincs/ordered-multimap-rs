@@ -1644,6 +1644,22 @@ where
     }
 }
 
+impl<Key, Value, State> IntoIterator for ListOrderedMultimap<Key, Value, State>
+where
+    Key: Clone + Eq + Hash,
+    State: BuildHasher,
+{
+    type IntoIter = IntoIter<Key, Value>;
+    type Item = (Key, Value);
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            keys: self.keys,
+            iter: self.values.into_iter(),
+        }
+    }
+}
+
 impl<'map, Key, Value, State> IntoIterator for &'map ListOrderedMultimap<Key, Value, State>
 where
     Key: Eq + Hash,
@@ -1667,22 +1683,6 @@ where
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
-    }
-}
-
-impl<Key, Value, State> IntoIterator for ListOrderedMultimap<Key, Value, State>
-where
-    Key: Eq + Hash + Clone,
-    State: BuildHasher,
-{
-    type IntoIter = IntoIter<Key, Value>;
-    type Item = (Key, Value);
-
-    fn into_iter(self) -> Self::IntoIter {
-        IntoIter {
-            keys: self.keys,
-            iter: self.values.into_iter(),
-        }
     }
 }
 
@@ -2916,6 +2916,71 @@ where
 {
 }
 
+/// An iterator that owns and yields all key-value pairs in a multimap by cloning the keys for their
+/// possibly multiple values. This is unnecessarily expensive whenever [`Iter`] or [`IterMut`] would
+/// suit as well. The order of the yielded items is always in the order that they were inserted.
+pub struct IntoIter<Key, Value> {
+    // The list of the keys in the map. This is ordered by time of insertion.
+    keys: VecList<Key>,
+
+    /// The iterator over the list of all values. This is ordered by time of insertion.
+    iter: VecListIntoIter<ValueEntry<Key, Value>>,
+}
+
+impl<Key, Value> IntoIter<Key, Value> {
+    /// Creates an iterator that yields immutable references to all key-value pairs in a multimap.
+    pub fn iter(&self) -> Iter<Key, Value> {
+        Iter {
+            keys: &self.keys,
+            iter: self.iter.iter(),
+        }
+    }
+}
+
+impl<Key, Value> Debug for IntoIter<Key, Value>
+where
+    Key: Debug,
+    Value: Debug,
+{
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.write_str("IntoIter(")?;
+        formatter.debug_list().entries(self.iter()).finish()?;
+        formatter.write_str(")")
+    }
+}
+
+impl<Key, Value> DoubleEndedIterator for IntoIter<Key, Value>
+where
+    Key: Clone,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let value_entry = self.iter.next_back()?;
+        let key = self.keys.get(value_entry.key_index).cloned().unwrap();
+        Some((key, value_entry.value))
+    }
+}
+
+impl<Key, Value> ExactSizeIterator for IntoIter<Key, Value> where Key: Clone {}
+
+impl<Key, Value> FusedIterator for IntoIter<Key, Value> where Key: Clone {}
+
+impl<Key, Value> Iterator for IntoIter<Key, Value>
+where
+    Key: Clone,
+{
+    type Item = (Key, Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let value_entry = self.iter.next()?;
+        let key = self.keys.get(value_entry.key_index).cloned().unwrap();
+        Some((key, value_entry.value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
 /// An iterator that yields immutable references to all key-value pairs in a multimap. The order of
 /// the yielded items is always in the order that they were inserted.
 pub struct Iter<'map, Key, Value> {
@@ -3024,70 +3089,6 @@ impl<'map, Key, Value> Iterator for IterMut<'map, Key, Value> {
         let value_entry = self.iter.next()?;
         let key = self.keys.get(value_entry.key_index).unwrap();
         Some((key, &mut value_entry.value))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
-/// An iterator that owns and yields all key-value pairs in a multimap. The order of
-/// the yielded items is always in the order that they were inserted.
-pub struct IntoIter<Key, Value> {
-    // The list of the keys in the map. This is ordered by time of insertion.
-    keys: VecList<Key>,
-
-    /// The iterator over the list of all values. This is ordered by time of insertion.
-    iter: VecListIntoIter<ValueEntry<Key, Value>>,
-}
-
-impl<Key, Value> IntoIter<Key, Value> {
-    /// Creates an iterator that yields immutable references to all key-value pairs in a multimap.
-    pub fn iter(&self) -> Iter<Key, Value> {
-        Iter {
-            keys: &self.keys,
-            iter: self.iter.iter(),
-        }
-    }
-}
-
-impl<Key, Value> Debug for IntoIter<Key, Value>
-where
-    Key: Debug,
-    Value: Debug,
-{
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        formatter.write_str("IntoIter(")?;
-        formatter.debug_list().entries(self.iter()).finish()?;
-        formatter.write_str(")")
-    }
-}
-
-impl<Key, Value> DoubleEndedIterator for IntoIter<Key, Value>
-where
-    Key: Clone,
-{
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let value_entry = self.iter.next_back()?;
-        let key = self.keys.get(value_entry.key_index).cloned().unwrap();
-        Some((key, value_entry.value))
-    }
-}
-
-impl<Key, Value> ExactSizeIterator for IntoIter<Key, Value> where Key: Clone {}
-
-impl<Key, Value> FusedIterator for IntoIter<Key, Value> where Key: Clone {}
-
-impl<Key, Value> Iterator for IntoIter<Key, Value>
-where
-    Key: Clone,
-{
-    type Item = (Key, Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let value_entry = self.iter.next()?;
-        let key = self.keys.get(value_entry.key_index).cloned().unwrap();
-        Some((key, value_entry.value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -3785,9 +3786,9 @@ mod test {
         check_bounds::<EntryValues<'static, (), ()>>();
         check_bounds::<EntryValuesDrain<'static, (), ()>>();
         check_bounds::<EntryValuesMut<'static, (), ()>>();
+        check_bounds::<IntoIter<(), ()>>();
         check_bounds::<Iter<'static, (), ()>>();
         check_bounds::<IterMut<'static, (), ()>>();
-        check_bounds::<IntoIter<(), ()>>();
         check_bounds::<KeyValues<'static, (), ()>>();
         check_bounds::<KeyValuesDrain<'static, (), ()>>();
         check_bounds::<KeyValuesEntryDrain<'static, (), ()>>();
@@ -4167,27 +4168,6 @@ mod test {
     }
 
     #[test]
-    fn test_iter_size_hint() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key1", "value1");
-        map.append("key2", "value2");
-        map.append("key2", "value3");
-        map.append("key1", "value4");
-
-        let mut iter = map.iter();
-        assert_eq!(iter.size_hint(), (4, Some(4)));
-        iter.next();
-        assert_eq!(iter.size_hint(), (3, Some(3)));
-        iter.next();
-        assert_eq!(iter.size_hint(), (2, Some(2)));
-        iter.next();
-        assert_eq!(iter.size_hint(), (1, Some(1)));
-        iter.next();
-        assert_eq!(iter.size_hint(), (0, Some(0)));
-    }
-
-    #[test]
     fn test_iter_mut_debug() {
         let mut map = ListOrderedMultimap::new();
 
@@ -4253,6 +4233,27 @@ mod test {
         map.append("key1", "value4");
 
         let mut iter = map.iter_mut();
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_iter_size_hint() {
+        let mut map = ListOrderedMultimap::new();
+
+        map.insert("key1", "value1");
+        map.append("key2", "value2");
+        map.append("key2", "value3");
+        map.append("key1", "value4");
+
+        let mut iter = map.iter();
         assert_eq!(iter.size_hint(), (4, Some(4)));
         iter.next();
         assert_eq!(iter.size_hint(), (3, Some(3)));

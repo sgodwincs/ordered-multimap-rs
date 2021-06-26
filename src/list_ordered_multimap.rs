@@ -231,42 +231,6 @@ where
         raw_entry(&self.keys, &self.map, hash, key).is_some()
     }
 
-    /// Returns an iterator that yields keys and all associated values with those keys as separate
-    /// drain iterators. The order of yielded pairs will be the order in which the keys were first
-    /// inserted into the multimap.
-    ///
-    /// Regardless of whether this iterator is fully consumed, all keys and values will be removed
-    /// from the map.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ordered_multimap::ListOrderedMultimap;
-    ///
-    /// let mut map = ListOrderedMultimap::new();
-    ///
-    /// map.insert("key", "value1");
-    /// map.append("key", "value2");
-    ///
-    /// let mut iter = map.drain_pairs();
-    ///
-    /// let (key, mut values) = iter.next().unwrap();
-    /// assert_eq!(key, "key");
-    /// assert_eq!(values.next(), Some("value1"));
-    /// assert_eq!(values.next(), Some("value2"));
-    /// assert_eq!(values.next(), None);
-    /// ```
-    pub fn drain_pairs(&mut self) -> KeyValuesDrain<Key, Value, State> {
-        KeyValuesDrain {
-            build_hasher: &self.build_hasher,
-            keys: &self.keys as *const _,
-            dropped: Arc::new(AtomicUsize::new(self.keys_len())),
-            iter: self.keys.drain(),
-            map: &mut self.map,
-            values: &mut self.values as *mut _,
-        }
-    }
-
     /// Returns whether the given key is in the multimap.
     ///
     /// Complexity: O(1)
@@ -1363,7 +1327,8 @@ where
     ) where
         Function: FnMut(&Key, &mut Value) -> bool,
     {
-        let values_ptr = values as *mut VecList<ValueEntry<Key, Value>>;
+        let mut post_updates = vec![];
+
         values.retain(|value_entry| {
             let key = keys.get(value_entry.key_index).unwrap();
 
@@ -1382,17 +1347,13 @@ where
                     map_entry.length -= 1;
 
                     if let Some(previous_index) = value_entry.previous_index {
-                        let previous_value_entry =
-                            unsafe { (*values_ptr).get_mut(previous_index) }.unwrap();
-                        previous_value_entry.next_index = value_entry.next_index;
+                        post_updates.push((previous_index, None, Some(value_entry.next_index)));
                     } else {
                         map_entry.head_index = value_entry.next_index.unwrap();
                     }
 
                     if let Some(next_index) = value_entry.next_index {
-                        let next_value_entry =
-                            unsafe { (*values_ptr).get_mut(next_index) }.unwrap();
-                        next_value_entry.previous_index = value_entry.previous_index;
+                        post_updates.push((next_index, Some(value_entry.previous_index), None));
                     } else {
                         map_entry.tail_index = value_entry.previous_index.unwrap();
                     }
@@ -1403,6 +1364,18 @@ where
                 true
             }
         });
+
+        for (index, new_previous_index, new_next_index) in post_updates {
+            let value_entry = values.get_mut(index).unwrap();
+
+            if let Some(new_previous_index) = new_previous_index {
+                value_entry.previous_index = new_previous_index;
+            }
+
+            if let Some(new_next_index) = new_next_index {
+                value_entry.next_index = new_next_index;
+            }
+        }
     }
 
     /// Returns an iterator that yields immutable references to all values in the multimap by
@@ -3188,266 +3161,6 @@ where
     }
 }
 
-/// An iterator that drains the multimap of all keys and their value drain iterators. The order of
-/// the yielded items is always in the order the keys were first inserted.
-pub struct KeyValuesDrain<'map, Key, Value, State = RandomState>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    /// The builder hasher for the map, kept separately for mutability concerns.
-    build_hasher: &'map State,
-
-    /// The number of keys whose value drain iterators have yet to have been fully consumed. This is
-    /// needed to make this type thread-safe.
-    dropped: Arc<AtomicUsize>,
-
-    /// The drain iterator over the list of all values. This is ordered by time of insertion.
-    iter: VecListDrain<'map, Key>,
-
-    // The list of the keys in the map. This is ordered by time of insertion.
-    keys: *const VecList<Key>,
-
-    /// The internal mapping from key hashes to associated value indices.
-    map: &'map mut HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
-
-    /// The list of the values in the map. This is ordered by time of insertion.
-    values: *mut VecList<ValueEntry<Key, Value>>,
-}
-
-impl<Key, Value, State> KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    /// Creates an iterator that yields immutable references to all keys and their value iterators.
-    pub fn iter(&self) -> KeyValues<Key, Value, State> {
-        KeyValues {
-            build_hasher: self.build_hasher,
-            keys: unsafe { &*self.keys },
-            iter: self.iter.iter(),
-            map: self.map,
-            values: unsafe { &*self.values },
-        }
-    }
-}
-
-impl<Key, Value, State> Debug for KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Debug + Eq + Hash,
-    State: BuildHasher,
-    Value: Debug,
-{
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        formatter.write_str("KeyValuesDrain(")?;
-        formatter.debug_list().entries(self.iter()).finish()?;
-        formatter.write_str(")")
-    }
-}
-
-impl<Key, Value, State> DoubleEndedIterator for KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let key = self.iter.next_back()?;
-        let hash = hash_key(self.build_hasher, &key);
-        let entry = match raw_entry_mut_empty(unsafe { &*self.keys }, self.map, hash) {
-            RawEntryMut::Occupied(entry) => entry,
-            _ => panic!("expected occupied entry in internal map"),
-        };
-        let map_entry = entry.remove();
-        let iter = KeyValuesEntryDrain::from_map_entry(
-            unsafe { &mut *self.values },
-            &map_entry,
-            self.dropped.clone(),
-        );
-        Some((key, iter))
-    }
-}
-
-impl<Key, Value, State> Drop for KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    fn drop(&mut self) {
-        for _ in self {}
-    }
-}
-
-impl<Key, Value, State> ExactSizeIterator for KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-}
-
-impl<Key, Value, State> FusedIterator for KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-}
-
-impl<'map, Key, Value, State> Iterator for KeyValuesDrain<'map, Key, Value, State>
-where
-    Key: Eq + Hash,
-    State: BuildHasher,
-{
-    type Item = (Key, KeyValuesEntryDrain<'map, Key, Value>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let key = self.iter.next()?;
-        let hash = hash_key(self.build_hasher, &key);
-        let entry = match raw_entry_mut_empty(unsafe { &*self.keys }, self.map, hash) {
-            RawEntryMut::Occupied(entry) => entry,
-            _ => panic!("expected occupied entry in internal map"),
-        };
-        let map_entry = entry.remove();
-        let iter = KeyValuesEntryDrain::from_map_entry(
-            unsafe { &mut *self.values },
-            &map_entry,
-            self.dropped.clone(),
-        );
-        Some((key, iter))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
-unsafe impl<Key, Value, State> Send for KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Eq + Hash + Send,
-    State: BuildHasher,
-    Value: Send,
-{
-}
-
-unsafe impl<Key, Value, State> Sync for KeyValuesDrain<'_, Key, Value, State>
-where
-    Key: Eq + Hash + Sync,
-    State: BuildHasher,
-    Value: Sync,
-{
-}
-
-/// An iterator that drains all values for a given key. The order of the yielded items is always in
-/// the order the values were first inserted.
-///
-/// This is only used with [`KeyValuesDrain`] to account for thread saftey.
-pub struct KeyValuesEntryDrain<'map, Key, Value> {
-    /// The number of keys whose value drain iterators have yet to have been fully consumed. This is
-    /// needed to make this type thread-safe. This originates from [`KeyValuesDrain`].
-    dropped: Arc<AtomicUsize>,
-
-    /// The first index of the values not yet yielded.
-    head_index: Option<Index<ValueEntry<Key, Value>>>,
-
-    /// The remaining number of values to be yielded.
-    remaining: usize,
-
-    /// The last index of the values not yet yielded.
-    tail_index: Option<Index<ValueEntry<Key, Value>>>,
-
-    /// The list of the values in the map. This is ordered by time of insertion.
-    values: &'map mut VecList<ValueEntry<Key, Value>>,
-}
-
-impl<'map, Key, Value> KeyValuesEntryDrain<'map, Key, Value> {
-    /// Convenience function for creating a new iterator from a map entry.
-    fn from_map_entry(
-        values: &'map mut VecList<ValueEntry<Key, Value>>,
-        map_entry: &MapEntry<Key, Value>,
-        dropped: Arc<AtomicUsize>,
-    ) -> Self {
-        KeyValuesEntryDrain {
-            dropped,
-            head_index: Some(map_entry.head_index),
-            remaining: map_entry.length,
-            tail_index: Some(map_entry.tail_index),
-            values,
-        }
-    }
-
-    /// Creates an iterator that yields immutable references to all values of a key.
-    pub fn iter(&self) -> EntryValues<Key, Value> {
-        EntryValues {
-            head_index: self.head_index,
-            remaining: self.remaining,
-            tail_index: self.tail_index,
-            values: self.values,
-        }
-    }
-}
-
-impl<Key, Value> Debug for KeyValuesEntryDrain<'_, Key, Value>
-where
-    Key: Debug,
-    Value: Debug,
-{
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        formatter.write_str("KeyValuesEntryDrain(")?;
-        formatter.debug_list().entries(self.iter()).finish()?;
-        formatter.write_str(")")
-    }
-}
-
-impl<Key, Value> DoubleEndedIterator for KeyValuesEntryDrain<'_, Key, Value> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            None
-        } else {
-            self.tail_index.map(|index| {
-                let entry = unsafe { self.values.remove_sync(index) };
-                self.tail_index = entry.previous_index;
-                self.remaining -= 1;
-                entry.value
-            })
-        }
-    }
-}
-
-impl<Key, Value> Drop for KeyValuesEntryDrain<'_, Key, Value> {
-    fn drop(&mut self) {
-        while let Some(_) = self.next() {}
-
-        let previous = self.dropped.fetch_sub(1, Ordering::SeqCst);
-
-        if previous == 1 {
-            self.values.clear()
-        }
-    }
-}
-
-impl<Key, Value> ExactSizeIterator for KeyValuesEntryDrain<'_, Key, Value> {}
-
-impl<Key, Value> FusedIterator for KeyValuesEntryDrain<'_, Key, Value> {}
-
-impl<Key, Value> Iterator for KeyValuesEntryDrain<'_, Key, Value> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            None
-        } else {
-            self.head_index.map(|index| {
-                let entry = unsafe { self.values.remove_sync(index) };
-                self.head_index = entry.next_index;
-                self.remaining -= 1;
-                entry.value
-            })
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
-    }
-}
-
 pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
     /// The builder hasher for the map, kept separately for mutability concerns.
     build_hasher: &'map State,
@@ -3790,8 +3503,6 @@ mod test {
         check_bounds::<Iter<'static, (), ()>>();
         check_bounds::<IterMut<'static, (), ()>>();
         check_bounds::<KeyValues<'static, (), ()>>();
-        check_bounds::<KeyValuesDrain<'static, (), ()>>();
-        check_bounds::<KeyValuesEntryDrain<'static, (), ()>>();
         check_bounds::<KeyValuesMut<'static, (), ()>>();
         check_bounds::<ListOrderedMultimap<(), ()>>();
         check_bounds::<Values<'static, (), ()>>();
@@ -4385,169 +4096,11 @@ mod test {
     }
 
     #[test]
-    fn test_key_values_drain_debug() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key1", "value1");
-        map.append("key2", "value2");
-        map.append("key2", "value3");
-        map.append("key1", "value4");
-
-        let iter = map.drain_pairs();
-        assert_eq!(
-            format!("{:?}", iter),
-            r#"KeyValuesDrain([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
-        );
-    }
-
-    #[test]
-    fn test_key_values_drain_double_ended() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key1", "value1");
-        map.append("key2", "value2");
-        map.append("key2", "value3");
-        map.append("key1", "value4");
-
-        let mut iter = map.drain_pairs();
-
-        let (key, mut values) = iter.next().unwrap();
-        assert_eq!(key, "key1");
-        assert_eq!(values.next(), Some("value1"));
-        assert_eq!(values.next(), Some("value4"));
-        assert_eq!(values.next(), None);
-
-        let (key, mut values) = iter.next().unwrap();
-        assert_eq!(key, "key2");
-        assert_eq!(values.next(), Some("value2"));
-        assert_eq!(values.next(), Some("value3"));
-        assert_eq!(values.next(), None);
-
-        assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn test_key_values_drain_empty() {
-        let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
-        let mut iter = map.drain_pairs();
-        assert!(iter.next_back().is_none());
-        assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn test_key_values_drain_fused() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key", "value");
-
-        let mut iter = map.drain_pairs();
-
-        let (key, mut values) = iter.next().unwrap();
-        assert_eq!(key, "key");
-        assert_eq!(values.next(), Some("value"));
-        assert_eq!(values.next(), None);
-
-        assert!(iter.next().is_none());
-        assert!(iter.next_back().is_none());
-        assert!(iter.next().is_none());
-        assert!(iter.next_back().is_none());
-        assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn test_key_values_drain_size_hint() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key1", "value1");
-        map.append("key2", "value2");
-        map.append("key2", "value3");
-        map.append("key1", "value4");
-
-        let mut iter = map.drain_pairs();
-        assert_eq!(iter.size_hint(), (2, Some(2)));
-        iter.next();
-        assert_eq!(iter.size_hint(), (1, Some(1)));
-        iter.next();
-        assert_eq!(iter.size_hint(), (0, Some(0)));
-    }
-
-    #[test]
     fn test_key_values_empty() {
         let map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
         let mut iter = map.pairs();
         assert!(iter.next_back().is_none());
         assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn test_key_values_entry_drain_debug() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key", "value1");
-        map.append("key", "value2");
-        map.append("key", "value3");
-        map.append("key", "value4");
-
-        let mut iter = map.drain_pairs();
-        let (_, values) = iter.next().unwrap();
-
-        assert_eq!(
-            format!("{:?}", values),
-            r#"KeyValuesEntryDrain(["value1", "value2", "value3", "value4"])"#
-        );
-    }
-
-    #[test]
-    fn test_key_values_entry_drain_double_ended() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key", "value1");
-        map.append("key", "value2");
-        map.append("key", "value3");
-        map.append("key", "value4");
-
-        let mut iter = map.drain_pairs();
-        let (_, mut values) = iter.next().unwrap();
-        assert_eq!(values.next(), Some("value1"));
-        assert_eq!(values.next_back(), Some("value4"));
-        assert_eq!(values.next(), Some("value2"));
-        assert_eq!(values.next_back(), Some("value3"));
-        assert_eq!(values.next(), None);
-
-        assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn test_key_values_entry_drain_fused() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key", "value");
-
-        let mut iter = map.drain_pairs();
-        let (_, mut values) = iter.next().unwrap();
-        assert_eq!(values.next(), Some("value"));
-        assert_eq!(values.next(), None);
-        assert_eq!(values.next_back(), None);
-        assert_eq!(values.next(), None);
-        assert_eq!(values.next_back(), None);
-    }
-
-    #[test]
-    fn test_key_values_entry_drain_size_hint() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key1", "value1");
-        map.append("key2", "value2");
-        map.append("key2", "value3");
-        map.append("key1", "value4");
-
-        let mut iter = map.drain_pairs();
-        let (_, mut values) = iter.next().unwrap();
-        assert_eq!(values.size_hint(), (2, Some(2)));
-        values.next();
-        assert_eq!(values.size_hint(), (1, Some(1)));
-        values.next();
-        assert_eq!(values.size_hint(), (0, Some(0)));
     }
 
     #[test]
@@ -4832,41 +4385,6 @@ mod test {
             format!("{:?}", map),
             r#"{"key1": "value1", "key2": "value2", "key2": "value3", "key1": "value4"}"#
         );
-    }
-
-    #[test]
-    fn test_list_ordered_multimap_drain_pairs() {
-        let mut map = ListOrderedMultimap::new();
-
-        map.insert("key1", "value1");
-        map.insert("key2", "value2");
-        map.append("key2", "value3");
-        map.append("key1", "value4");
-
-        let prior_keys_capacity = map.keys_capacity();
-        let prior_values_capacity = map.values_capacity();
-
-        {
-            let mut iter = map.drain_pairs();
-
-            let (key, mut values) = iter.next().unwrap();
-            assert_eq!(key, "key1");
-            assert_eq!(values.next(), Some("value1"));
-            assert_eq!(values.next(), Some("value4"));
-            assert_eq!(values.next(), None);
-
-            let (key, mut values) = iter.next().unwrap();
-            assert_eq!(key, "key2");
-            assert_eq!(values.next(), Some("value2"));
-            assert_eq!(values.next(), Some("value3"));
-            assert_eq!(values.next(), None);
-
-            assert!(iter.next().is_none());
-        }
-
-        assert!(map.is_empty());
-        assert_eq!(map.keys_capacity(), prior_keys_capacity);
-        assert_eq!(map.values_capacity(), prior_values_capacity);
     }
 
     #[test]

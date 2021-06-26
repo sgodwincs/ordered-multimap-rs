@@ -1,3 +1,8 @@
+# 0.4.0
+
+ - Remove `drain_pairs` as it's unsafe.
+ - Fix miri issues with `retain`.
+
 # 0.3.1
 
  - Added crate feature `serde` for (de)serialization.

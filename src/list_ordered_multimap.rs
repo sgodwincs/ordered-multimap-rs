@@ -1,6 +1,5 @@
 use dlv_list::{
-    Drain as VecListDrain, Index, IntoIter as VecListIntoIter, Iter as VecListIter,
-    IterMut as VecListIterMut, VecList,
+    Index, IntoIter as VecListIntoIter, Iter as VecListIter, IterMut as VecListIterMut, VecList,
 };
 use hashbrown::hash_map::{RawEntryMut, RawOccupiedEntryMut};
 use hashbrown::HashMap;
@@ -10,8 +9,6 @@ use std::fmt::{self, Debug, Formatter};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::iter::{FromIterator, FusedIterator};
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ListOrderedMultimap<Key, Value, State = RandomState> {

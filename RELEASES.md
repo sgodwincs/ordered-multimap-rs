@@ -1,3 +1,8 @@
+# 0.4.1
+
+ - Updated `dlv-list` dependency to `0.2.4`.
+ - Updated `hashbrown` dependency to `0.11.0`.
+
 # 0.4.0
 
  - Remove `drain_pairs` as it's unsafe.

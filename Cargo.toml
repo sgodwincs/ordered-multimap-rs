@@ -8,9 +8,9 @@ license = "MIT"
 name = "ordered-multimap"
 readme = "README.md"
 repository = "https://github.com/sgodwincs/ordered-multimap-rs"
-version = "0.4.1"
+version = "0.4.2"
 
 [dependencies]
-dlv-list = "0.2.4"
+dlv-list = "0.3.0"
 hashbrown = "0.11.0"
 serde = { version = "1", optional = true }

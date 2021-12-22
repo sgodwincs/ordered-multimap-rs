@@ -1,3 +1,7 @@
+# 0.4.2
+
+ - Updated `dlv-list` dependency to `0.3.0`. This is not a breaking change as it's not user visible.
+
 # 0.4.1
 
  - Updated `dlv-list` dependency to `0.2.4`.

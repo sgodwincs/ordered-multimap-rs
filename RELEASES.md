@@ -1,3 +1,7 @@
+# 0.4.3
+
+ - Updated `hashbrown` dependency to `0.12.0`.
+
 # 0.4.2
 
  - Updated `dlv-list` dependency to `0.3.0`. This is not a breaking change as it's not user visible.

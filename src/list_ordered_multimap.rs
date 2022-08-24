@@ -1,5 +1,7 @@
 //! Provides types related to the usage of [`ListOrderedMultimap`].
 
+#![allow(unsafe_code)]
+
 use dlv_list::{
     Index, IntoIter as VecListIntoIter, Iter as VecListIter, IterMut as VecListIterMut, VecList,
 };
@@ -147,10 +149,11 @@ where
                 let value_entry = ValueEntry::new(key_index, value);
                 let index = self.values.push_back(value_entry);
                 let keys = &self.keys;
-                entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
-                    let key = keys.get(key_index).unwrap();
-                    hash_key(build_hasher, key)
-                });
+                let _ =
+                    entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
+                        let key = keys.get(key_index).unwrap();
+                        hash_key(build_hasher, key)
+                    });
                 false
             }
         }
@@ -255,7 +258,7 @@ where
     /// assert_eq!(value, &"value");
     /// assert_eq!(map.get(&"key"), Some(&"value"));
     /// ```
-    pub fn entry(&mut self, key: Key) -> Entry<Key, Value, State> {
+    pub fn entry(&mut self, key: Key) -> Entry<'_, Key, Value, State> {
         use self::RawEntryMut::*;
 
         let hash = hash_key(&self.build_hasher, &key);
@@ -398,7 +401,7 @@ where
     /// assert_eq!(iter.next(), Some(&"value2"));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub fn get_all<KeyQuery>(&self, key: &KeyQuery) -> EntryValues<Key, Value>
+    pub fn get_all<KeyQuery>(&self, key: &KeyQuery) -> EntryValues<'_, Key, Value>
     where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
@@ -436,7 +439,7 @@ where
     ///
     /// assert_eq!(map.get(&"key"), Some(&"value3"));
     /// ```
-    pub fn get_all_mut<KeyQuery>(&mut self, key: &KeyQuery) -> EntryValuesMut<Key, Value>
+    pub fn get_all_mut<KeyQuery>(&mut self, key: &KeyQuery) -> EntryValuesMut<'_, Key, Value>
     where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
@@ -562,7 +565,7 @@ where
     /// assert_eq!(map.values_len(), 1);
     /// assert_eq!(map.get(&"key"), Some(&"value3"));
     /// ```
-    pub fn insert_all(&mut self, key: Key, value: Value) -> EntryValuesDrain<Key, Value> {
+    pub fn insert_all(&mut self, key: Key, value: Value) -> EntryValuesDrain<'_, Key, Value> {
         use self::RawEntryMut::*;
 
         let hash = hash_key(&self.build_hasher, &key);
@@ -584,10 +587,11 @@ where
                 let value_entry = ValueEntry::new(key_index, value);
                 let index = self.values.push_back(value_entry);
                 let keys = &self.keys;
-                entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
-                    let key = keys.get(key_index).unwrap();
-                    hash_key(build_hasher, key)
-                });
+                let _ =
+                    entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
+                        let key = keys.get(key_index).unwrap();
+                        hash_key(build_hasher, key)
+                    });
                 EntryValuesDrain::empty(&mut self.values)
             }
         }
@@ -635,7 +639,7 @@ where
     /// assert_eq!(iter.next(), Some((&"key2", &"value2")));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub fn iter(&self) -> Iter<Key, Value> {
+    pub fn iter(&self) -> Iter<'_, Key, Value> {
         Iter {
             keys: &self.keys,
             iter: self.values.iter(),
@@ -672,7 +676,7 @@ where
     ///
     /// assert_eq!(map.get(&"key1"), Some(&"value3"));
     /// ```
-    pub fn iter_mut(&mut self) -> IterMut<Key, Value> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, Key, Value> {
         IterMut {
             keys: &self.keys,
             iter: self.values.iter_mut(),
@@ -702,7 +706,7 @@ where
     /// assert_eq!(keys.next(), Some(&"key3"));
     /// assert_eq!(keys.next(), None);
     /// ```
-    pub fn keys(&self) -> Keys<Key> {
+    pub fn keys(&self) -> Keys<'_, Key> {
         Keys(self.keys.iter())
     }
 
@@ -808,7 +812,7 @@ where
             match map.raw_entry_mut().from_hash(hash, |_| false) {
                 RawEntryMut::Vacant(entry) => {
                     let keys = &self.keys;
-                    entry.insert_with_hasher(hash, key_index, map_entry, |&key_index| {
+                    let _ = entry.insert_with_hasher(hash, key_index, map_entry, |&key_index| {
                         let key = keys.get(key_index).unwrap();
                         hash_key(build_hasher, key)
                     });
@@ -872,7 +876,7 @@ where
     /// assert_eq!(values.next(), Some(&"value2"));
     /// assert_eq!(values.next(), None);
     /// ```
-    pub fn pairs(&self) -> KeyValues<Key, Value, State> {
+    pub fn pairs(&self) -> KeyValues<'_, Key, Value, State> {
         KeyValues {
             build_hasher: &self.build_hasher,
             keys: &self.keys,
@@ -904,13 +908,13 @@ where
     /// assert_eq!(values.next(), Some(&mut "value2"));
     /// assert_eq!(values.next(), None);
     /// ```
-    pub fn pairs_mut(&mut self) -> KeyValuesMut<Key, Value, State> {
+    pub fn pairs_mut(&mut self) -> KeyValuesMut<'_, Key, Value, State> {
         KeyValuesMut {
             build_hasher: &self.build_hasher,
             keys: &self.keys,
             iter: self.keys.iter(),
             map: &self.map,
-            values: &mut self.values as *mut _,
+            values: &mut self.values,
         }
     }
 
@@ -945,7 +949,7 @@ where
     /// assert_eq!(key, KeyWrapper::Owned("key"));
     /// assert_eq!(&value, &"value1");
     /// ```
-    pub fn pop_back(&mut self) -> Option<(KeyWrapper<Key>, Value)> {
+    pub fn pop_back(&mut self) -> Option<(KeyWrapper<'_, Key>, Value)> {
         let value_entry = self.values.pop_back()?;
 
         let key_wrapper = match value_entry.previous_index {
@@ -972,7 +976,7 @@ where
 
                 match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
                     RawEntryMut::Occupied(entry) => {
-                        entry.remove();
+                        let _ = entry.remove();
                     }
                     _ => panic!("expectd occupied entry in internal map"),
                 }
@@ -1015,7 +1019,7 @@ where
     /// assert_eq!(key, KeyWrapper::Owned("key"));
     /// assert_eq!(&value, &"value2");
     /// ```
-    pub fn pop_front(&mut self) -> Option<(KeyWrapper<Key>, Value)> {
+    pub fn pop_front(&mut self) -> Option<(KeyWrapper<'_, Key>, Value)> {
         let value_entry = self.values.pop_front()?;
 
         let key_wrapper = match value_entry.next_index {
@@ -1042,7 +1046,7 @@ where
 
                 match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
                     RawEntryMut::Occupied(entry) => {
-                        entry.remove();
+                        let _ = entry.remove();
                     }
                     _ => panic!("expectd occupied entry in internal map"),
                 }
@@ -1116,7 +1120,7 @@ where
     ///
     /// assert_eq!(map.get(&"key"), None);
     /// ```
-    pub fn remove_all<KeyQuery>(&mut self, key: &KeyQuery) -> EntryValuesDrain<Key, Value>
+    pub fn remove_all<KeyQuery>(&mut self, key: &KeyQuery) -> EntryValuesDrain<'_, Key, Value>
     where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
@@ -1129,7 +1133,7 @@ where
         match entry {
             Occupied(entry) => {
                 let (key_index, map_entry) = entry.remove_entry();
-                self.keys.remove(key_index).unwrap();
+                let _ = self.keys.remove(key_index).unwrap();
                 EntryValuesDrain::from_map_entry(&mut self.values, &map_entry)
             }
             Vacant(_) => EntryValuesDrain::empty(&mut self.values),
@@ -1205,7 +1209,7 @@ where
     pub fn remove_entry_all<KeyQuery>(
         &mut self,
         key: &KeyQuery,
-    ) -> Option<(Key, EntryValuesDrain<Key, Value>)>
+    ) -> Option<(Key, EntryValuesDrain<'_, Key, Value>)>
     where
         Key: Borrow<KeyQuery>,
         KeyQuery: ?Sized + Eq + Hash,
@@ -1260,7 +1264,7 @@ where
                 RawEntryMut::Vacant(entry) => entry,
                 _ => panic!("expected vacant entry"),
             };
-            entry.insert_hashed_nocheck(hash, key_index, map_entry);
+            let _ = entry.insert_hashed_nocheck(hash, key_index, map_entry);
         }
 
         self.keys.reserve(additional_capacity);
@@ -1350,8 +1354,8 @@ where
                 };
 
                 if value_entry.previous_index.is_none() && value_entry.next_index.is_none() {
-                    entry.remove();
-                    keys.remove(value_entry.key_index);
+                    let _ = entry.remove();
+                    let _ = keys.remove(value_entry.key_index);
                 } else {
                     let map_entry = entry.get_mut();
                     map_entry.length -= 1;
@@ -1410,7 +1414,7 @@ where
     /// assert_eq!(iter.next(), Some(&"value2"));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub fn values(&self) -> Values<Key, Value> {
+    pub fn values(&self) -> Values<'_, Key, Value> {
         Values(self.values.iter())
     }
 
@@ -1442,7 +1446,7 @@ where
     ///
     /// assert_eq!(map.get(&"key1"), Some(&"value3"));
     /// ```
-    pub fn values_mut(&mut self) -> ValuesMut<Key, Value> {
+    pub fn values_mut(&mut self) -> ValuesMut<'_, Key, Value> {
         ValuesMut(self.values.iter_mut())
     }
 
@@ -1553,7 +1557,7 @@ where
     Value: Debug,
     State: BuildHasher,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.debug_map().entries(self.iter()).finish()
     }
 }
@@ -1593,7 +1597,7 @@ where
         self.reserve_values(iter.size_hint().0);
 
         for (key, value) in iter {
-            self.append(key, value);
+            let _ = self.append(key, value);
         }
     }
 }
@@ -1688,6 +1692,7 @@ where
 ///
 /// This type is similar to [`std::borrow::Cow`] but does not require a [`Clone`] trait bound on the
 /// key.
+#[allow(single_use_lifetimes)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum KeyWrapper<'map, Key> {
     /// An immutable reference to a key. This implies that the key is still associated to at least
@@ -1699,7 +1704,7 @@ pub enum KeyWrapper<'map, Key> {
     Owned(Key),
 }
 
-impl<'map, Key> KeyWrapper<'map, Key> {
+impl<Key> KeyWrapper<'_, Key> {
     /// If the key wrapped is owned, it is returned. Otherwise, the borrowed key is cloned and
     /// returned.
     ///
@@ -1998,13 +2003,13 @@ where
     }
 }
 
-impl<'map, Key, Value, State> Debug for Entry<'map, Key, Value, State>
+impl<Key, Value, State> Debug for Entry<'_, Key, Value, State>
 where
     Key: Debug,
     State: BuildHasher,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         use self::Entry::*;
 
         match self {
@@ -2160,7 +2165,7 @@ impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
     /// assert_eq!(iter.next(), Some("value2"));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub fn insert_all(&mut self, value: Value) -> EntryValuesDrain<Key, Value> {
+    pub fn insert_all(&mut self, value: Value) -> EntryValuesDrain<'_, Key, Value> {
         let key_index = *self.entry.key();
         let map_entry = self.entry.get_mut();
         let value_entry = ValueEntry::new(key_index, value);
@@ -2212,7 +2217,7 @@ impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
     /// assert_eq!(iter.next(), Some(&"value2"));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub fn iter(&self) -> EntryValues<Key, Value> {
+    pub fn iter(&self) -> EntryValues<'_, Key, Value> {
         let map_entry = self.entry.get();
         EntryValues::from_map_entry(&self.values, &map_entry)
     }
@@ -2238,7 +2243,7 @@ impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
     /// assert_eq!(iter.next(), Some(&mut "value2"));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub fn iter_mut(&mut self) -> EntryValuesMut<Key, Value> {
+    pub fn iter_mut(&mut self) -> EntryValuesMut<'_, Key, Value> {
         let map_entry = self.entry.get_mut();
         EntryValuesMut::from_map_entry(&mut self.values, &map_entry)
     }
@@ -2402,7 +2407,7 @@ where
     Key: Debug,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("OccupiedEntry")
             .field("key", self.key())
@@ -2461,7 +2466,7 @@ where
         let index = self.values.push_back(value_entry);
         let map_entry = MapEntry::new(index);
         let keys = &self.keys;
-        entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
+        let _ = entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
             let key = keys.get(key_index).unwrap();
             hash_key(build_hasher, key)
         });
@@ -2496,7 +2501,7 @@ where
         let index = self.values.push_back(value_entry);
         let map_entry = MapEntry::new(index);
         let keys = &self.keys;
-        entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
+        let _ = entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
             let key = keys.get(key_index).unwrap();
             hash_key(build_hasher, key)
         });
@@ -2557,7 +2562,7 @@ impl<Key, Value, State> Debug for VacantEntry<'_, Key, Value, State>
 where
     Key: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("VacantEntry")
             .field(&self.key)
@@ -2621,7 +2626,7 @@ impl<Key, Value> Debug for EntryValues<'_, Key, Value>
 where
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("EntryValues(")?;
         formatter.debug_list().entries(self.clone()).finish()?;
         formatter.write_str(")")
@@ -2709,7 +2714,7 @@ impl<'map, Key, Value> EntryValuesDrain<'map, Key, Value> {
     }
 
     /// Creates an iterator that yields immutable references to all values of a given key.
-    pub fn iter(&self) -> EntryValues<Key, Value> {
+    pub fn iter(&self) -> EntryValues<'_, Key, Value> {
         EntryValues {
             head_index: self.head_index,
             remaining: self.remaining,
@@ -2724,7 +2729,7 @@ where
     Key: Debug,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("EntryValuesDrain(")?;
         formatter.debug_list().entries(self.iter()).finish()?;
         formatter.write_str(")")
@@ -2805,7 +2810,7 @@ impl<'map, Key, Value> EntryValuesMut<'map, Key, Value> {
             phantom: PhantomData,
             remaining: 0,
             tail_index: None,
-            values: values as *mut _,
+            values,
         }
     }
 
@@ -2819,12 +2824,12 @@ impl<'map, Key, Value> EntryValuesMut<'map, Key, Value> {
             phantom: PhantomData,
             remaining: map_entry.length,
             tail_index: Some(map_entry.tail_index),
-            values: values as *mut _,
+            values,
         }
     }
 
     /// Creates an iterator that yields immutable references to all values of a given key.
-    pub fn iter(&self) -> EntryValues<Key, Value> {
+    pub fn iter(&self) -> EntryValues<'_, Key, Value> {
         EntryValues {
             head_index: self.head_index,
             remaining: self.remaining,
@@ -2838,7 +2843,7 @@ impl<Key, Value> Debug for EntryValuesMut<'_, Key, Value>
 where
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("EntryValuesMut(")?;
         formatter.debug_list().entries(self.iter()).finish()?;
         formatter.write_str(")")
@@ -2912,7 +2917,7 @@ pub struct IntoIter<Key, Value> {
 
 impl<Key, Value> IntoIter<Key, Value> {
     /// Creates an iterator that yields immutable references to all key-value pairs in a multimap.
-    pub fn iter(&self) -> Iter<Key, Value> {
+    pub fn iter(&self) -> Iter<'_, Key, Value> {
         Iter {
             keys: &self.keys,
             iter: self.iter.iter(),
@@ -2925,7 +2930,7 @@ where
     Key: Debug,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("IntoIter(")?;
         formatter.debug_list().entries(self.iter()).finish()?;
         formatter.write_str(")")
@@ -2988,7 +2993,7 @@ where
     Key: Debug,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("Iter(")?;
         formatter.debug_list().entries(self.clone()).finish()?;
         formatter.write_str(")")
@@ -3033,7 +3038,7 @@ pub struct IterMut<'map, Key, Value> {
 
 impl<Key, Value> IterMut<'_, Key, Value> {
     /// Creates an iterator that yields immutable references to all key-value pairs in a multimap.
-    pub fn iter(&self) -> Iter<Key, Value> {
+    pub fn iter(&self) -> Iter<'_, Key, Value> {
         Iter {
             keys: self.keys,
             iter: self.iter.iter(),
@@ -3046,7 +3051,7 @@ where
     Key: Debug,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("IterMut(")?;
         formatter.debug_list().entries(self.iter()).finish()?;
         formatter.write_str(")")
@@ -3116,7 +3121,7 @@ where
     State: BuildHasher,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("KeyValues(")?;
         formatter.debug_list().entries(self.clone()).finish()?;
         formatter.write_str(")")
@@ -3171,6 +3176,8 @@ where
     }
 }
 
+/// An iterator that yields mutable references to all keys and their value iterators. The order of
+/// the yielded items is always in the order the keys were first inserted.
 pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
     /// The builder hasher for the map, kept separately for mutability concerns.
     build_hasher: &'map State,
@@ -3190,7 +3197,7 @@ pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
 
 impl<Key, Value, State> KeyValuesMut<'_, Key, Value, State> {
     /// Creates an iterator that yields mutable references to all key-value pairs of a multimap.
-    pub fn iter(&self) -> KeyValues<Key, Value, State> {
+    pub fn iter(&self) -> KeyValues<'_, Key, Value, State> {
         KeyValues {
             build_hasher: self.build_hasher,
             keys: self.keys,
@@ -3207,7 +3214,7 @@ where
     State: BuildHasher,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("KeyValuesMut(")?;
         formatter.debug_list().entries(self.iter()).finish()?;
         formatter.write_str(")")
@@ -3290,7 +3297,7 @@ impl<Key> Debug for Keys<'_, Key>
 where
     Key: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("Keys(")?;
         formatter.debug_list().entries(self.clone()).finish()?;
         formatter.write_str(")")
@@ -3334,7 +3341,7 @@ where
     Key: Debug,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("Values(")?;
         formatter.debug_list().entries(self.clone()).finish()?;
         formatter.write_str(")")
@@ -3369,7 +3376,7 @@ pub struct ValuesMut<'map, Key, Value>(VecListIterMut<'map, ValueEntry<Key, Valu
 
 impl<Key, Value> ValuesMut<'_, Key, Value> {
     /// Creates an iterator that yields immutable references to all values of a multimap.
-    pub fn iter(&self) -> Values<Key, Value> {
+    pub fn iter(&self) -> Values<'_, Key, Value> {
         Values(self.0.iter())
     }
 }
@@ -3379,7 +3386,7 @@ where
     Key: Debug,
     Value: Debug,
 {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("ValuesMut(")?;
         formatter.debug_list().entries(self.iter()).finish()?;
         formatter.write_str(")")
@@ -3498,6 +3505,7 @@ where
         .from_hash(hash, |&key_index| keys.get(key_index).is_none())
 }
 
+#[allow(unused_results)]
 #[cfg(test)]
 mod test {
     use super::*;

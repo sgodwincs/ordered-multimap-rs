@@ -1,3 +1,5 @@
+//! Provides types related to the usage of [`ListOrderedMultimap`].
+
 use dlv_list::{
     Index, IntoIter as VecListIntoIter, Iter as VecListIter, IterMut as VecListIterMut, VecList,
 };
@@ -11,6 +13,17 @@ use std::iter::{FromIterator, FusedIterator};
 use std::marker::PhantomData;
 
 #[derive(Clone)]
+/// A multimap that associates with each key a list of values.
+///
+/// # Ordering
+///
+/// The primary guarantee this type gives is that regardless of what you do to the multimap, you are always able to
+/// iterate through all keys and values in the order they were inserted. Values can be iterated by their insertion order
+/// either for a specific key or for the entire map.
+///
+/// # Allocations
+///
+/// Allocations may be performed on any key-value insertion.
 pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
     /// The hasher builder that constructs new hashers for hashing keys. We have to keep this
     /// separate from the hashmap itself as we need to be able to access it when the hashmap keys

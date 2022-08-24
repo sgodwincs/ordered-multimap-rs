@@ -2,13 +2,6 @@
 
 #![allow(unsafe_code)]
 
-use dlv_list::{
-  Index, IntoIter as VecListIntoIter, Iter as VecListIter, IterMut as VecListIterMut, VecList,
-};
-use hashbrown::{
-  hash_map::{RawEntryMut, RawOccupiedEntryMut},
-  HashMap,
-};
 use std::{
   borrow::Borrow,
   collections::hash_map::RandomState,
@@ -16,6 +9,14 @@ use std::{
   hash::{BuildHasher, Hash, Hasher},
   iter::{FromIterator, FusedIterator},
   marker::PhantomData,
+};
+
+use dlv_list::{
+  Index, IntoIter as VecListIntoIter, Iter as VecListIter, IterMut as VecListIterMut, VecList,
+};
+use hashbrown::{
+  hash_map::{RawEntryMut, RawOccupiedEntryMut},
+  HashMap,
 };
 
 #[derive(Clone)]

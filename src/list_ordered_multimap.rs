@@ -3457,11 +3457,6 @@ where
   KeyQuery: ?Sized + Eq + Hash,
   State: BuildHasher,
 {
-  // TODO(https://github.com/rust-lang/rust/issues/56158): Avoids segmentation fault.
-  if map.capacity() == 0 {
-    return None;
-  }
-
   map.raw_entry().from_hash(hash, |&key_index| {
     let existing_key = keys.get(key_index).unwrap();
     key == existing_key.borrow()

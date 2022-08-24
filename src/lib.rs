@@ -3,6 +3,8 @@
 //!
 //! See the type documentation for more information.
 
+#![cfg_attr(coverage_nightly, feature(no_coverage))]
+
 pub mod list_ordered_multimap;
 
 pub use self::list_ordered_multimap::ListOrderedMultimap;

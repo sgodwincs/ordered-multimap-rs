@@ -55,7 +55,7 @@ where
       S::default(),
     );
     while let Some((key, value)) = access.next_entry()? {
-      map.append(key, value);
+      let _ = map.append(key, value);
     }
     Ok(map)
   }

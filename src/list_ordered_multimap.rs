@@ -1569,19 +1569,15 @@ where
 
 impl<Key, Value, State> Debug for ListOrderedMultimap<Key, Value, State>
 where
-  Key: Debug + Eq + Hash,
+  Key: Debug,
   Value: Debug,
-  State: BuildHasher,
 {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
     formatter.debug_map().entries(self.iter()).finish()
   }
 }
 
-impl<Key, Value> Default for ListOrderedMultimap<Key, Value, RandomState>
-where
-  Key: Eq + Hash,
-{
+impl<Key, Value> Default for ListOrderedMultimap<Key, Value, RandomState> {
   fn default() -> Self {
     Self::new()
   }
@@ -1589,9 +1585,8 @@ where
 
 impl<Key, Value, State> Eq for ListOrderedMultimap<Key, Value, State>
 where
-  Key: Eq + Hash,
+  Key: Eq,
   Value: PartialEq,
-  State: BuildHasher,
 {
 }
 
@@ -1644,8 +1639,7 @@ where
 
 impl<Key, Value, State> IntoIterator for ListOrderedMultimap<Key, Value, State>
 where
-  Key: Clone + Eq + Hash,
-  State: BuildHasher,
+  Key: Clone,
 {
   type IntoIter = IntoIter<Key, Value>;
   type Item = (Key, Value);
@@ -1658,11 +1652,7 @@ where
   }
 }
 
-impl<'map, Key, Value, State> IntoIterator for &'map ListOrderedMultimap<Key, Value, State>
-where
-  Key: Eq + Hash,
-  State: BuildHasher,
-{
+impl<'map, Key, Value, State> IntoIterator for &'map ListOrderedMultimap<Key, Value, State> {
   type IntoIter = Iter<'map, Key, Value>;
   type Item = (&'map Key, &'map Value);
 
@@ -1671,11 +1661,7 @@ where
   }
 }
 
-impl<'map, Key, Value, State> IntoIterator for &'map mut ListOrderedMultimap<Key, Value, State>
-where
-  Key: Eq + Hash,
-  State: BuildHasher,
-{
+impl<'map, Key, Value, State> IntoIterator for &'map mut ListOrderedMultimap<Key, Value, State> {
   type IntoIter = IterMut<'map, Key, Value>;
   type Item = (&'map Key, &'map mut Value);
 
@@ -1686,9 +1672,8 @@ where
 
 impl<Key, Value, State> PartialEq for ListOrderedMultimap<Key, Value, State>
 where
-  Key: Eq + Hash,
+  Key: PartialEq,
   Value: PartialEq,
-  State: BuildHasher,
 {
   fn eq(&self, other: &ListOrderedMultimap<Key, Value, State>) -> bool {
     if self.keys_len() != other.keys_len() || self.values_len() != other.values_len() {

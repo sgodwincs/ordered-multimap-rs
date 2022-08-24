@@ -32,18 +32,17 @@ use hashbrown::{
 ///
 /// Allocations may be performed on any key-value insertion.
 pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
-  /// The hasher builder that constructs new hashers for hashing keys. We have to keep this
-  /// separate from the hashmap itself as we need to be able to access it when the hashmap keys
-  /// are reallocated due to reallocation. We cannot use the hash of the actual keys in the map
-  /// as those hashes are not representative of what hash they truly represent.
+  /// The hasher builder that constructs new hashers for hashing keys. We have to keep this separate from the hashmap
+  /// itself as we need to be able to access it when the hashmap keys are reallocated due to changes. We cannot use the
+  /// hash of the actual keys in the map as those hashes are not representative.
   build_hasher: State,
 
   /// The list of the keys in the multimap. This is ordered by time of insertion.
   keys: VecList<Key>,
 
-  /// The map from indices of keys to the indices of their values in the value list. The list of
-  /// the indices is ordered by time of insertion. We never use hasher of the hashmap explicitly
-  /// here, we instead use [`ListOrderedMultimap::build_hasher`].
+  /// The map from indices of keys to the indices of their values in the value list. The list of the indices is ordered
+  /// by time of insertion. We never use hasher of the hashmap explicitly here, we instead use
+  /// [`ListOrderedMultimap::build_hasher`].
   map: HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
   /// The list of the values in the multimap. This is ordered by time of insertion.
@@ -72,9 +71,8 @@ where
 
   /// Creates a new multimap with the specified capacities.
   ///
-  /// The multimap will be able to hold at least `key_capacity` keys and `value_capacity` values
-  /// without reallocating. A capacity of 0 will result in no allocation for the respective
-  /// container.
+  /// The multimap will be able to hold at least `key_capacity` keys and `value_capacity` values without reallocating.
+  /// A capacity of 0 will result in no allocation for the respective container.
   ///
   /// # Examples
   ///
@@ -110,8 +108,8 @@ where
 {
   /// Appends a value to the list of values associated with the given key.
   ///
-  /// If the key is not already in the multimap, this will be identical to an insert and the
-  /// return value will be `false`. Otherwise, `true` will be returned.
+  /// If the key is not already in the multimap, this will be identical to an insert and the return value will be
+  /// `false`. Otherwise, `true` will be returned.
   ///
   /// Complexity: amortized O(1)
   ///
@@ -270,9 +268,9 @@ where
   pub fn entry(&mut self, key: Key) -> Entry<'_, Key, Value, State> {
     let hash = hash_key(&self.build_hasher, &key);
 
-    // TODO: This ugliness arises from borrow checking issues which seems to happen when the
-    // vacant entry is created in the match block further below for `Vacant` even though it
-    // should be perfectly safe. Is there a better way to do this?
+    // TODO: This ugliness arises from borrow checking issues which seems to happen when the vacant entry is created in
+    // the match block further below for `Vacant` even though it should be perfectly safe. Is there a better way to do
+    // this?
     if !self.contains_key(&key) {
       Entry::Vacant(VacantEntry {
         build_hasher: &self.build_hasher,
@@ -366,8 +364,8 @@ where
     self.iter_mut().next()
   }
 
-  /// Returns an immutable reference to the first value, by insertion order, associated with the
-  /// given key, or `None` if the key is not in the multimap.
+  /// Returns an immutable reference to the first value, by insertion order, associated with the given key, or `None` if
+  /// the key is not in the multimap.
   ///
   /// Complexity: O(1)
   ///
@@ -394,8 +392,8 @@ where
       .map(|entry| &entry.value)
   }
 
-  /// Returns an iterator that yields immutable references to all values associated with the
-  /// given key by insertion order.
+  /// Returns an iterator that yields immutable references to all values associated with the given key by insertion
+  /// order.
   ///
   /// If the key is not in the multimap, the iterator will yield no values.
   ///
@@ -427,8 +425,7 @@ where
     }
   }
 
-  /// Returns an iterator that yields mutable references to all values associated with the given
-  /// key by insertion order.
+  /// Returns an iterator that yields mutable references to all values associated with the given key by insertion order.
   ///
   /// If the key is not in the multimap, the iterator will yield no values.
   ///
@@ -466,8 +463,8 @@ where
     }
   }
 
-  /// Returns a mutable reference to the first value, by insertion order, associated with the
-  /// given key, or `None` if the key is not in the multimap.
+  /// Returns a mutable reference to the first value, by insertion order, associated with the given key, or `None` if
+  /// the key is not in the multimap.
   ///
   /// Complexity: O(1)
   ///
@@ -516,11 +513,11 @@ where
     &self.build_hasher
   }
 
-  /// Inserts the key-value pair into the multimap and returns the first value, by insertion
-  /// order, that was already associated with the key.
+  /// Inserts the key-value pair into the multimap and returns the first value, by insertion order, that was already
+  /// associated with the key.
   ///
-  /// If the key is not already in the multimap, `None` will be returned. If the key is already in
-  /// the multimap, the insertion ordering of the keys will remain unchanged.
+  /// If the key is not already in the multimap, `None` will be returned. If the key is already in the multimap, the
+  /// insertion ordering of the keys will remain unchanged.
   ///
   /// Complexity: O(1) amortized
   ///
@@ -546,11 +543,11 @@ where
     self.insert_all(key, value).next()
   }
 
-  /// Inserts the key-value pair into the multimap and returns an iterator that yields all values
-  /// previously associated with the key by insertion order.
+  /// Inserts the key-value pair into the multimap and returns an iterator that yields all values previously associated
+  /// with the key by insertion order.
   ///
-  /// If the key is not already in the multimap, the iterator will yield no values.If the key is
-  /// already in the multimap, the insertion ordering of the keys will remain unchanged.
+  /// If the key is not already in the multimap, the iterator will yield no values.If the key is already in the
+  /// multimap, the insertion ordering of the keys will remain unchanged.
   ///
   /// Complexity: O(1) amortized
   ///
@@ -563,8 +560,8 @@ where
   /// assert!(map.is_empty());
   ///
   /// {
-  ///     let mut old_values = map.insert_all("key", "value");
-  ///     assert_eq!(old_values.next(), None);
+  ///   let mut old_values = map.insert_all("key", "value");
+  ///   assert_eq!(old_values.next(), None);
   /// }
   ///
   /// assert_eq!(map.values_len(), 1);
@@ -573,10 +570,10 @@ where
   /// map.append("key", "value2");
   ///
   /// {
-  ///     let mut old_values = map.insert_all("key", "value3");
-  ///     assert_eq!(old_values.next(), Some("value"));
-  ///     assert_eq!(old_values.next(), Some("value2"));
-  ///     assert_eq!(old_values.next(), None);
+  ///   let mut old_values = map.insert_all("key", "value3");
+  ///   assert_eq!(old_values.next(), Some("value"));
+  ///   assert_eq!(old_values.next(), Some("value2"));
+  ///   assert_eq!(old_values.next(), None);
   /// }
   ///
   /// assert_eq!(map.values_len(), 1);
@@ -632,8 +629,7 @@ where
     self.keys.is_empty()
   }
 
-  /// Returns an iterator that yields immutable references to all key-value pairs in the multimap
-  /// by insertion order.
+  /// Returns an iterator that yields immutable references to all key-value pairs in the multimap by insertion order.
   ///
   /// # Examples
   ///
@@ -662,8 +658,7 @@ where
     }
   }
 
-  /// Returns an iterator that yields mutable references to all key-value pairs in the multimap by
-  /// insertion order.
+  /// Returns an iterator that yields mutable references to all key-value pairs in the multimap by insertion order.
   ///
   /// Only the values are mutable, the keys are immutable.
   ///
@@ -700,12 +695,10 @@ where
     }
   }
 
-  /// Returns an iterator that yields immutable references to all keys in the multimap by
-  /// insertion order.
+  /// Returns an iterator that yields immutable references to all keys in the multimap by insertion order.
   ///
-  /// Insertion order of keys is determined by the order in which a given key is first inserted
-  /// into the multimap with a value. Any subsequent insertions with that key without first
-  /// removing it will not affect its ordering.
+  /// Insertion order of keys is determined by the order in which a given key is first inserted into the multimap with a
+  /// value. Any subsequent insertions with that key without first removing it will not affect its ordering.
   ///
   /// # Examples
   ///
@@ -768,8 +761,8 @@ where
     self.keys.len()
   }
 
-  /// Reorganizes the multimap to ensure maximum spatial locality and changes the key and value
-  /// capacities to the provided values.
+  /// Reorganizes the multimap to ensure maximum spatial locality and changes the key and value capacities to the
+  /// provided values.
   ///
   /// This function can be used to actually increase the capacity of the multimap.
   ///
@@ -777,8 +770,7 @@ where
   ///
   /// # Panics
   ///
-  /// Panics if either of the given minimum capacities are less than their current respective
-  /// lengths.
+  /// Panics if either of the given minimum capacities are less than their current respective lengths.
   ///
   /// # Examples
   ///
@@ -844,8 +836,7 @@ where
     self.map = map;
   }
 
-  /// Reorganizes the multimap to ensure maximum spatial locality and removes any excess key and
-  /// value capacity.
+  /// Reorganizes the multimap to ensure maximum spatial locality and removes any excess key and value capacity.
   ///
   /// Complexity: O(|K| + |V|) where |K| is the number of keys and |V| is the number of values.
   ///
@@ -874,9 +865,8 @@ where
     self.pack_to(self.keys_len(), self.values_len());
   }
 
-  /// Returns an iterator that yields immutable references to keys and all associated values with
-  /// those keys as separate iterators. The order of yielded pairs will be the order in which the
-  /// keys were first inserted into the multimap.
+  /// Returns an iterator that yields immutable references to keys and all associated values with those keys as separate
+  /// iterators. The order of yielded pairs will be the order in which the keys were first inserted into the multimap.
   ///
   /// # Examples
   ///
@@ -907,9 +897,9 @@ where
     }
   }
 
-  /// Returns an iterator that yields immutable references to keys and mutable references to all
-  /// associated values with those keys as separate iterators. The order of yielded pairs will be
-  /// the order in which the keys were first inserted into the multimap.
+  /// Returns an iterator that yields immutable references to keys and mutable references to all associated values with
+  /// those keys as separate iterators. The order of yielded pairs will be the order in which the keys were first
+  /// inserted into the multimap.
   ///
   /// # Examples
   ///
@@ -942,13 +932,12 @@ where
 
   /// Removes the last key-value pair to have been inserted.
   ///
-  /// Because a single key can be associated with many values, the key returned by this function
-  /// is a [`KeyWrapper`] which can be either owned or borrowed. If the value removed was the only
-  /// value associated with the key, then the key will be returned. Otherwise, a reference to the
-  /// key will be returned.
+  /// Because a single key can be associated with many values, the key returned by this function is a [`KeyWrapper`]
+  /// which can be either owned or borrowed. If the value removed was the only value associated with the key, then the
+  /// key will be returned. Otherwise, a reference to the key will be returned.
   ///
-  /// This function along with [`ListOrderedMultimap::pop_front`] act as replacements for a drain
-  /// iterator since an iterator cannot be done over [`KeyWrapper`].
+  /// This function along with [`ListOrderedMultimap::pop_front`] act as replacements for a drain iterator since an
+  /// iterator cannot be done over [`KeyWrapper`].
   ///
   /// Complexity: O(1)
   ///
@@ -1012,13 +1001,12 @@ where
 
   /// Removes the first key-value pair to have been inserted.
   ///
-  /// Because a single key can be associated with many values, the key returned by this function
-  /// is a [`KeyWrapper`] which can be either owned or borrowed. If the value removed was the only
-  /// value associated with the key, then the key will be returned. Otherwise, a reference to the
-  /// key will be returned.
+  /// Because a single key can be associated with many values, the key returned by this function is a [`KeyWrapper`]
+  /// which can be either owned or borrowed. If the value removed was the only value associated with the key, then the
+  /// key will be returned. Otherwise, a reference to the key will be returned.
   ///
-  /// This function along with [`ListOrderedMultimap::pop_back`] act as replacements for a drain
-  /// iterator since an iterator cannot be done over [`KeyWrapper`].
+  /// This function along with [`ListOrderedMultimap::pop_back`] act as replacements for a drain iterator since an
+  /// iterator cannot be done over [`KeyWrapper`].
   ///
   /// Complexity: O(1)
   ///
@@ -1080,8 +1068,7 @@ where
     Some((key_wrapper, value_entry.value))
   }
 
-  /// Removes all values associated with the given key from the map and returns the first value
-  /// by insertion order.
+  /// Removes all values associated with the given key from the map and returns the first value by insertion order.
   ///
   /// Complexity: O(1)
   ///
@@ -1110,8 +1097,7 @@ where
     self.remove_entry(key).map(|(_, value)| value)
   }
 
-  /// Removes all values associated with the given key from the map and returns an iterator that
-  /// yields those values.
+  /// Removes all values associated with the given key from the map and returns an iterator that yields those values.
   ///
   /// If the key is not already in the map, the iterator will yield no values.
   ///
@@ -1160,8 +1146,7 @@ where
     }
   }
 
-  /// Removes all values associated with the given key from the map and returns the key and first
-  /// value.
+  /// Removes all values associated with the given key from the map and returns the key and first value.
   ///
   /// If the key is not already in the map, then `None` will be returned.
   ///
@@ -1193,8 +1178,8 @@ where
     Some((key, iter.next().unwrap()))
   }
 
-  /// Removes all values associated with the given key from the map and returns the key and an
-  /// iterator that yields those values.
+  /// Removes all values associated with the given key from the map and returns the key and an iterator that yields
+  /// those values.
   ///
   /// If the key is not already in the map, then `None` will be returned.
   ///
@@ -1250,8 +1235,8 @@ where
 
   /// Reserves additional capacity such that more keys can be stored in the multimap.
   ///
-  /// If the existing capacity minus the current length is enough to satisfy the additional
-  /// capacity, the capacity will remain unchanged.
+  /// If the existing capacity minus the current length is enough to satisfy the additional capacity, the capacity will
+  /// remain unchanged.
   ///
   /// If the capacity is increased, the capacity may be increased by more than what was requested.
   ///
@@ -1293,8 +1278,8 @@ where
 
   /// Reserves additional capacity such that more values can be stored in the multimap.
   ///
-  /// If the existing capacity minus the current length is enough to satisfy the additional
-  /// capacity, the capacity will remain unchanged.
+  /// If the existing capacity minus the current length is enough to satisfy the additional capacity, the capacity will
+  /// remain unchanged.
   ///
   /// If the capacity is increased, the capacity may be increased by more than what was requested.
   ///
@@ -1412,8 +1397,7 @@ where
     }
   }
 
-  /// Returns an iterator that yields immutable references to all values in the multimap by
-  /// insertion order.
+  /// Returns an iterator that yields immutable references to all values in the multimap by insertion order.
   ///
   /// # Examples
   ///
@@ -1439,8 +1423,7 @@ where
     Values(self.values.iter())
   }
 
-  /// Returns an iterator that yields mutable references to all values in the multimap by
-  /// insertion order.
+  /// Returns an iterator that yields mutable references to all values in the multimap by insertion order.
   ///
   /// # Examples
   ///
@@ -1513,16 +1496,14 @@ where
     self.values.len()
   }
 
-  /// Creates a new multimap with the specified capacities and the given hash builder to hash
-  /// keys.
+  /// Creates a new multimap with the specified capacities and the given hash builder to hash keys.
   ///
-  /// The multimap will be able to hold at least `key_capacity` keys and `value_capacity` values
-  /// without reallocating. A capacity of 0 will result in no allocation for the respective
-  /// container.
+  /// The multimap will be able to hold at least `key_capacity` keys and `value_capacity` values without reallocating. A
+  /// capacity of 0 will result in no allocation for the respective container.
   ///
-  /// The `state` is normally randomly generated and is designed to allow multimaps to be
-  /// resistant to attacks that cause many collisions and very poor performance. Setting it
-  /// manually using this function can expose a DoS attack vector.
+  /// The `state` is normally randomly generated and is designed to allow multimaps to be resistant to attacks that
+  /// cause many collisions and very poor performance. Setting it manually using this function can expose a DoS attack
+  /// vector.
   ///
   /// # Examples
   ///
@@ -1552,9 +1533,9 @@ where
 
   /// Creates a new multimap with no capacity which will use the given hash builder to hash keys.
   ///
-  /// The `state` is normally randomly generated and is designed to allow multimaps to be
-  /// resistant to attacks that cause many collisions and very poor performance. Setting it
-  /// manually using this function can expose a DoS attack vector.
+  /// The `state` is normally randomly generated and is designed to allow multimaps to be resistant to attacks that
+  /// cause many collisions and very poor performance. Setting it manually using this function can expose a DoS attack
+  /// vector.
   ///
   /// # Examples
   ///
@@ -1716,23 +1697,20 @@ where
 
 /// A wrapper around a key that is either borrowed or owned.
 ///
-/// This type is similar to [`std::borrow::Cow`] but does not require a [`Clone`] trait bound on the
-/// key.
+/// This type is similar to [`std::borrow::Cow`] but does not require a [`Clone`] trait bound on the key.
 #[allow(single_use_lifetimes)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum KeyWrapper<'map, Key> {
-  /// An immutable reference to a key. This implies that the key is still associated to at least
-  /// one value in the multimap.
+  /// An immutable reference to a key. This implies that the key is still associated to at least one value in the
+  /// multimap.
   Borrowed(&'map Key),
 
-  /// An owned key. This will occur when a key is no longer associated with any values in the
-  /// multimap.
+  /// An owned key. This will occur when a key is no longer associated with any values in the multimap.
   Owned(Key),
 }
 
 impl<Key> KeyWrapper<'_, Key> {
-  /// If the key wrapped is owned, it is returned. Otherwise, the borrowed key is cloned and
-  /// returned.
+  /// If the key wrapped is owned, it is returned. Otherwise, the borrowed key is cloned and returned.
   ///
   /// # Examples
   ///
@@ -1874,8 +1852,8 @@ where
   Key: Eq + Hash,
   State: BuildHasher,
 {
-  /// Calls the given function with a mutable reference to the first value of this entry, by
-  /// insertion order, if it is vacant, otherwise this function is a no-op.
+  /// Calls the given function with a mutable reference to the first value of this entry, by insertion order, if it is
+  /// vacant, otherwise this function is a no-op.
   ///
   /// # Examples
   ///
@@ -1907,9 +1885,8 @@ where
     }
   }
 
-  /// If the entry is vacant, the given value will be inserted into it and a mutable reference to
-  /// that value will be returned. Otherwise, a mutable reference to the first value, by insertion
-  /// order, will be returned.
+  /// If the entry is vacant, the given value will be inserted into it and a mutable reference to that value will be
+  /// returned. Otherwise, a mutable reference to the first value, by insertion order, will be returned.
   ///
   /// # Examples
   ///
@@ -1932,8 +1909,8 @@ where
     }
   }
 
-  /// If the entry is vacant, the given value will be inserted into it and the new occupied entry
-  /// will be returned. Otherwise, the existing occupied entry will be returned.
+  /// If the entry is vacant, the given value will be inserted into it and the new occupied entry will be returned.
+  /// Otherwise, the existing occupied entry will be returned.
   ///
   /// # Examples
   ///
@@ -1956,9 +1933,9 @@ where
     }
   }
 
-  /// If the entry is vacant, the value returned from the given function will be inserted into it
-  /// and a mutable reference to that value will be returned. Otherwise, a mutable reference to
-  /// the first value, by insertion order, will be returned.
+  /// If the entry is vacant, the value returned from the given function will be inserted into it and a mutable
+  /// reference to that value will be returned. Otherwise, a mutable reference to the first value, by insertion order,
+  /// will be returned.
   ///
   /// # Examples
   ///
@@ -1984,9 +1961,8 @@ where
     }
   }
 
-  /// If the entry is vacant, the value returned from the given function will be inserted into it
-  /// and the new occupied entry will be returned. Otherwise, the existing occupied entry will be
-  /// returned.
+  /// If the entry is vacant, the value returned from the given function will be inserted into it and the new occupied
+  /// entry will be returned. Otherwise, the existing occupied entry will be returned.
   ///
   /// # Examples
   ///
@@ -2165,8 +2141,8 @@ impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
   /// map.insert("key", "value1");
   ///
   /// let mut entry = match map.entry("key") {
-  ///     Entry::Occupied(entry) => entry,
-  ///     _ => panic!("expected occupied entry")
+  ///   Entry::Occupied(entry) => entry,
+  ///   _ => panic!("expected occupied entry")
   /// };
   ///
   /// entry.append("value2");
@@ -2196,8 +2172,8 @@ impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
   /// map.insert("key", "value");
   ///
   /// let mut entry = match map.entry("key") {
-  ///     Entry::Occupied(entry) => entry,
-  ///     _ => panic!("expected occupied entry")
+  ///   Entry::Occupied(entry) => entry,
+  ///   _ => panic!("expected occupied entry")
   /// };
   ///
   /// assert_eq!(entry.into_mut(), &mut "value");
@@ -2218,8 +2194,8 @@ impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
   /// map.insert("key", "value1");
   ///
   /// let mut entry = match map.entry("key") {
-  ///     Entry::Occupied(entry) => entry,
-  ///     _ => panic!("expected occupied entry")
+  ///   Entry::Occupied(entry) => entry,
+  ///   _ => panic!("expected occupied entry")
   /// };
   ///
   /// entry.append("value2");
@@ -2272,8 +2248,8 @@ impl<'map, Key, Value> OccupiedEntry<'map, Key, Value> {
   /// map.insert("key", "value1");
   ///
   /// let mut entry = match map.entry("key") {
-  ///     Entry::Occupied(entry) => entry,
-  ///     _ => panic!("expected occupied entry")
+  ///   Entry::Occupied(entry) => entry,
+  ///   _ => panic!("expected occupied entry")
   /// };
   ///
   /// assert_eq!(entry.key(), &"key");
@@ -2588,8 +2564,8 @@ where
   }
 }
 
-/// An iterator that yields immutable references to all values of a given key. The order of the
-/// values is always in the order that they were inserted.
+/// An iterator that yields immutable references to all values of a given key. The order of the values is always in the
+/// order that they were inserted.
 pub struct EntryValues<'map, Key, Value> {
   /// The first index of the values not yet yielded.
   head_index: Option<Index<ValueEntry<Key, Value>>>,
@@ -2693,8 +2669,8 @@ impl<'map, Key, Value> Iterator for EntryValues<'map, Key, Value> {
   }
 }
 
-/// An iterator that moves all values of a given key out of a multimap but preserves the underlying
-/// capacity. The order of the values is always in the order that they were inserted.
+/// An iterator that moves all values of a given key out of a multimap but preserves the underlying capacity. The order
+/// of the values is always in the order that they were inserted.
 pub struct EntryValuesDrain<'map, Key, Value> {
   /// The first index of the values not yet yielded.
   head_index: Option<Index<ValueEntry<Key, Value>>>,
@@ -2803,14 +2779,13 @@ impl<Key, Value> Iterator for EntryValuesDrain<'_, Key, Value> {
   }
 }
 
-/// An iterator that yields mutable references to all values of a given key. The order of the values
-/// is always in the order that they were inserted.
+/// An iterator that yields mutable references to all values of a given key. The order of the values is always in the
+/// order that they were inserted.
 pub struct EntryValuesMut<'map, Key, Value> {
   /// The first index of the values not yet yielded.
   head_index: Option<Index<ValueEntry<Key, Value>>>,
 
-  /// Because [`EntryValuesMut::values`] is a pointer, we need to have a phantom data here for the
-  /// lifetime parameter.
+  /// Because [`EntryValuesMut::values`] is a pointer, we need to have a phantom data here for the lifetime parameter.
   phantom: PhantomData<&'map mut VecList<ValueEntry<Key, Value>>>,
 
   /// The remaining number of values to be yielded.
@@ -2928,9 +2903,9 @@ where
 {
 }
 
-/// An iterator that owns and yields all key-value pairs in a multimap by cloning the keys for their
-/// possibly multiple values. This is unnecessarily expensive whenever [`Iter`] or [`IterMut`] would
-/// suit as well. The order of the yielded items is always in the order that they were inserted.
+/// An iterator that owns and yields all key-value pairs in a multimap by cloning the keys for their possibly multiple
+/// values. This is unnecessarily expensive whenever [`Iter`] or [`IterMut`] would suit as well. The order of the
+/// yielded items is always in the order that they were inserted.
 pub struct IntoIter<Key, Value> {
   // The list of the keys in the map. This is ordered by time of insertion.
   keys: VecList<Key>,
@@ -2994,8 +2969,8 @@ where
   }
 }
 
-/// An iterator that yields immutable references to all key-value pairs in a multimap. The order of
-/// the yielded items is always in the order that they were inserted.
+/// An iterator that yields immutable references to all key-value pairs in a multimap. The order of the yielded items is
+/// always in the order that they were inserted.
 pub struct Iter<'map, Key, Value> {
   // The list of the keys in the map. This is ordered by time of insertion.
   keys: &'map VecList<Key>,
@@ -3051,8 +3026,8 @@ impl<'map, Key, Value> Iterator for Iter<'map, Key, Value> {
   }
 }
 
-/// An iterator that yields mutable references to all key-value pairs in a multimap. The order of
-/// the yielded items is always in the order that they were inserted.
+/// An iterator that yields mutable references to all key-value pairs in a multimap. The order of the yielded items is
+/// always in the order that they were inserted.
 pub struct IterMut<'map, Key, Value> {
   // The list of the keys in the map. This is ordered by time of insertion.
   keys: &'map VecList<Key>,
@@ -3110,8 +3085,8 @@ impl<'map, Key, Value> Iterator for IterMut<'map, Key, Value> {
   }
 }
 
-/// An iterator that yields immutable references to all keys and their value iterators. The order of
-/// the yielded items is always in the order the keys were first inserted.
+/// An iterator that yields immutable references to all keys and their value iterators. The order of the yielded items
+/// is always in the order the keys were first inserted.
 pub struct KeyValues<'map, Key, Value, State = RandomState> {
   /// The builder hasher for the map, kept separately for mutability concerns.
   build_hasher: &'map State,
@@ -3202,8 +3177,8 @@ where
   }
 }
 
-/// An iterator that yields mutable references to all keys and their value iterators. The order of
-/// the yielded items is always in the order the keys were first inserted.
+/// An iterator that yields mutable references to all keys and their value iterators. The order of the yielded items is
+/// always in the order the keys were first inserted.
 pub struct KeyValuesMut<'map, Key, Value, State = RandomState> {
   /// The builder hasher for the map, kept separately for mutability concerns.
   build_hasher: &'map State,
@@ -3310,8 +3285,8 @@ where
 {
 }
 
-/// An iterator that yields immutable references to all keys in the multimap. The order of the keys
-/// is always in the order that they were first inserted.
+/// An iterator that yields immutable references to all keys in the multimap. The order of the keys is always in the
+/// order that they were first inserted.
 pub struct Keys<'map, Key>(VecListIter<'map, Key>);
 
 impl<'map, Key> Clone for Keys<'map, Key> {
@@ -3353,8 +3328,8 @@ impl<'map, Key> Iterator for Keys<'map, Key> {
   }
 }
 
-/// An iterator that yields immutable references to all values of a multimap. The order of the
-/// values is always in the order that they were inserted.
+/// An iterator that yields immutable references to all values of a multimap. The order of the values is always in the
+/// order that they were inserted.
 pub struct Values<'map, Key, Value>(VecListIter<'map, ValueEntry<Key, Value>>);
 
 impl<'map, Key, Value> Clone for Values<'map, Key, Value> {
@@ -3397,8 +3372,8 @@ impl<'map, Key, Value> Iterator for Values<'map, Key, Value> {
   }
 }
 
-/// An iterator that yields mutable references to all values of a multimap. The order of the values
-/// is always in the order that they were inserted.
+/// An iterator that yields mutable references to all values of a multimap. The order of the values is always in the
+/// order that they were inserted.
 pub struct ValuesMut<'map, Key, Value>(VecListIterMut<'map, ValueEntry<Key, Value>>);
 
 impl<Key, Value> ValuesMut<'_, Key, Value> {

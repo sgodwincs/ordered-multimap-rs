@@ -1,3 +1,4 @@
+/mutants.out
+/mutants.out.old
 /target
-**/*.rs.bk
 Cargo.lock

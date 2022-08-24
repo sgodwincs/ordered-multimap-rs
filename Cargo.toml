@@ -2,7 +2,7 @@
 authors = ["Scott Godwin <sgodwincs@gmail.com>"]
 categories = ["data-structures"]
 description = "Insertion ordered multimap"
-edition = "2018"
+edition = "2021"
 homepage = "https://github.com/sgodwincs/ordered-multimap-rs"
 license = "MIT"
 name = "ordered-multimap"

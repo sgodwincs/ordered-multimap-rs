@@ -35,18 +35,18 @@ pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
   /// The hasher builder that constructs new hashers for hashing keys. We have to keep this separate from the hashmap
   /// itself as we need to be able to access it when the hashmap keys are reallocated due to changes. We cannot use the
   /// hash of the actual keys in the map as those hashes are not representative.
-  build_hasher: State,
+  pub(crate) build_hasher: State,
 
   /// The list of the keys in the multimap. This is ordered by time of insertion.
-  keys: VecList<Key>,
+  pub(crate) keys: VecList<Key>,
 
   /// The map from indices of keys to the indices of their values in the value list. The list of the indices is ordered
   /// by time of insertion. We never use hasher of the hashmap explicitly here, we instead use
   /// [`ListOrderedMultimap::build_hasher`].
-  map: HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
+  pub(crate) map: HashMap<Index<Key>, MapEntry<Key, Value>, DummyState>,
 
   /// The list of the values in the multimap. This is ordered by time of insertion.
-  values: VecList<ValueEntry<Key, Value>>,
+  pub(crate) values: VecList<ValueEntry<Key, Value>>,
 }
 
 impl<Key, Value> ListOrderedMultimap<Key, Value, RandomState> {
@@ -1762,7 +1762,7 @@ impl<Key> KeyWrapper<'_, Key> {
 
 /// The value type of the internal hash map.
 #[derive(Clone)]
-struct MapEntry<Key, Value> {
+pub(crate) struct MapEntry<Key, Value> {
   /// The index of the first value for this entry.
   head_index: Index<ValueEntry<Key, Value>>,
 
@@ -1800,7 +1800,7 @@ impl<Key, Value> MapEntry<Key, Value> {
 
 /// The value entry that is contained within the internal values list.
 #[derive(Clone)]
-struct ValueEntry<Key, Value> {
+pub(crate) struct ValueEntry<Key, Value> {
   /// The index of the key in the key list for this entry.
   key_index: Index<Key>,
 
@@ -3409,7 +3409,7 @@ impl<'map, Key, Value> Iterator for ValuesMut<'map, Key, Value> {
 
 /// Dummy builder hasher that is not meant to be used. It is simply a placeholder.
 #[derive(Clone, Debug)]
-struct DummyState;
+pub(crate) struct DummyState;
 
 impl BuildHasher for DummyState {
   type Hasher = DummyHasher;
@@ -3421,7 +3421,7 @@ impl BuildHasher for DummyState {
 
 /// Dummy hasher that is not meant to be used. It is simply a placeholder.
 #[derive(Clone, Debug)]
-struct DummyHasher;
+pub(crate) struct DummyHasher;
 
 impl Hasher for DummyHasher {
   fn finish(&self) -> u64 {
@@ -3544,12 +3544,24 @@ mod test {
     }
 
     let mut map = ListOrderedMultimap::with_hasher(TestBuildHasher);
+    let state = map.hasher();
+
+    assert_eq!(hash_key(state, "key1"), hash_key(state, "key2"));
 
     map.insert("key1", "value1");
     assert_eq!(map.get(&"key1"), Some(&"value1"));
 
     map.insert("key2", "value2");
     assert_eq!(map.get(&"key2"), Some(&"value2"));
+  }
+
+  #[test]
+  fn test_no_collision() {
+    let state = RandomState::new();
+    let hash_1 = hash_key(&state, "key1");
+    let hash_2 = hash_key(&state, "key2");
+
+    assert!(hash_1 != hash_2);
   }
 
   #[test]
@@ -3605,6 +3617,14 @@ mod test {
   }
 
   #[test]
+  fn test_entry_debug() {
+    let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
+    let entry = map.entry("key");
+
+    assert_eq!(format!("{:?}", entry), r#"VacantEntry("key")"#);
+  }
+
+  #[test]
   fn test_entry_values_debug() {
     let mut map = ListOrderedMultimap::new();
 
@@ -3629,11 +3649,11 @@ mod test {
     map.append("key", "value3");
     map.append("key", "value4");
 
-    let mut iter = map.remove_all(&"key");
-    assert_eq!(iter.next(), Some("value1"));
-    assert_eq!(iter.next_back(), Some("value4"));
-    assert_eq!(iter.next(), Some("value2"));
-    assert_eq!(iter.next_back(), Some("value3"));
+    let mut iter = map.get_all(&"key");
+    assert_eq!(iter.next(), Some(&"value1"));
+    assert_eq!(iter.next_back(), Some(&"value4"));
+    assert_eq!(iter.next(), Some(&"value2"));
+    assert_eq!(iter.next_back(), Some(&"value3"));
     assert_eq!(iter.next(), None);
   }
 
@@ -4099,13 +4119,14 @@ mod test {
     assert_eq!(values.next(), Some(&"value4"));
     assert_eq!(values.next(), None);
 
-    let (key, mut values) = iter.next().unwrap();
+    let (key, mut values) = iter.next_back().unwrap();
     assert_eq!(key, &"key2");
     assert_eq!(values.next(), Some(&"value2"));
     assert_eq!(values.next(), Some(&"value3"));
     assert_eq!(values.next(), None);
 
     assert!(iter.next().is_none());
+    assert!(iter.next_back().is_none());
   }
 
   #[test]
@@ -4169,13 +4190,14 @@ mod test {
     assert_eq!(values.next(), Some(&mut "value4"));
     assert_eq!(values.next(), None);
 
-    let (key, mut values) = iter.next().unwrap();
+    let (key, mut values) = iter.next_back().unwrap();
     assert_eq!(key, &"key2");
     assert_eq!(values.next(), Some(&mut "value2"));
     assert_eq!(values.next(), Some(&mut "value3"));
     assert_eq!(values.next(), None);
 
     assert!(iter.next().is_none());
+    assert!(iter.next_back().is_none());
   }
 
   #[test]
@@ -5302,5 +5324,19 @@ mod test {
     assert_eq!(iter.size_hint(), (1, Some(1)));
     iter.next();
     assert_eq!(iter.size_hint(), (0, Some(0)));
+  }
+
+  #[should_panic]
+  #[test]
+  fn test_dummy_hasher_finish() {
+    let hasher = DummyHasher;
+    hasher.finish();
+  }
+
+  #[should_panic]
+  #[test]
+  fn test_dummy_hasher_write() {
+    let mut hasher = DummyHasher;
+    hasher.write(&[]);
   }
 }

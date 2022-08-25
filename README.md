@@ -11,8 +11,8 @@ keys and values.
 
 ## Performance
 
-Preliminary benchmarks show that performance is quite decent but more will be required to state
-anything definitive.
+Basic benchmarks show that the performance of this crate is on par with that of the
+[multimap](https://crates.io/crates/multimap) crate which does not maintain insertion order.
 
 ## Features
 

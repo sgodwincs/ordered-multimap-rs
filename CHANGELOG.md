@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+# 0.5.0
+
+### Changed
+
+ - Loosened bounds required on some functions.
+
+### Fixed
+
+ - `serde` implementation now correctly works as a multimap.
+
 # 0.4.3
 
 ### Changed

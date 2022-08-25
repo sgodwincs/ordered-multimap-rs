@@ -23,7 +23,7 @@ where
   {
     let mut seq = serializer.serialize_seq(Some(self.values_len()))?;
 
-    for (key, value) in (&self).into_iter() {
+    for (key, value) in self.into_iter() {
       seq.serialize_element(&(key, value))?;
     }
 

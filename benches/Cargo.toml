@@ -1,0 +1,19 @@
+[package]
+name = "benches"
+version = "0.1.0"
+edition = "2021"
+description = "Benchmarks for ordered-multimap crate"
+publish = false
+
+[dev-dependencies]
+criterion = "0.3"
+multimap = "0.8.3"
+ordered-multimap = { path = ".." }
+
+[[bench]]
+name = "ordered-multimap"
+path = "benches/ordered-multimap/benches.rs"
+harness = false
+
+[dependencies]
+multimap = "0.8.3"

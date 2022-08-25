@@ -1,7 +1,8 @@
 # ordered-multimap-rs
 
-[![LICENSE](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Build Status](https://travis-ci.org/sgodwincs/ordered-multimap-rs.svg?branch=master)](https://travis-ci.org/sgodwincs/ordered-multimap-rs)
+[![Crates.io](https://img.shields.io/crates/v/ordered-multimap.svg)](https://crates.io/crates/ordered-multimap)
+[![Docs.rs](https://docs.rs/ordered-multimap/badge.svg)](https://docs.rs/ordered-multimap)
+[![CI](https://github.com/sgodwincs/ordered-multimap-rs/workflows/CI/badge.svg)](https://github.com/sgodwincs/ordered-multimap-rs/actions)
 
 Currently, this crate contains a single type `ListOrderedMultimap`. This is a multimap meaning that
 multiple values can be associated with a given key, but it also maintains insertion order across all

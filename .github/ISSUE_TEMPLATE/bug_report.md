@@ -2,7 +2,7 @@
 name: Bug report
 about: Create a report to help us improve
 title: ''
-labels: T-Bug
+labels: ["S-Pending", "T-Bug"]
 assignees: ''
 
 ---
@@ -36,7 +36,7 @@ Steps to reproduce the behavior:
 
 <!-- Please fill the following information. -->
 
-- ordered_multimap version: [e.g. 0.1.0]
+- ordered-multimap version: [e.g. 0.1.0]
 
 ## Additional context
 

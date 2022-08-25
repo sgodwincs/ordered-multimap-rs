@@ -2,7 +2,7 @@
 name: Feature request
 about: Suggest an idea for this project
 title: ''
-labels: T-Feature/Enhancement
+labels: ["S-Pending", "T-Feature/Enhancement"]
 assignees: ''
 
 ---

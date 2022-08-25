@@ -9,16 +9,16 @@ keys and values.
 
 [Documentation](https://docs.rs/ordered-multimap/)
 
-# Performance
+## Performance
 
 Preliminary benchmarks show that performance is quite decent but more will be required to state
 anything definitive.
 
-# Features
+## Features
 
  - `serde` for (de)serialization.
 
-# TODO
+## TODO
 
 It is planned that a corresponding `SetOrderedMultimap` will also be included in this crate which
 will provide the same insertion order guarantees, but the set of values associated to a given key

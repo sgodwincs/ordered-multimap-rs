@@ -11,7 +11,7 @@ categories = ["data-structures"]
 
 [dependencies]
 dlv-list = "0.4.0"
-hashbrown = "0.12.0"
+hashbrown = "0.13.1"
 serde = { version = "1", optional = true }
 
 [dev-dependencies]

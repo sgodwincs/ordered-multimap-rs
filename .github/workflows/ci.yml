@@ -16,7 +16,7 @@ jobs:
         with:
           toolchain: nightly
           override: true
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Build & run tests
         run: cargo test --all-features
   miri:
@@ -38,7 +38,7 @@ jobs:
         with:
           toolchain: nightly
           override: true
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-mutants
         run: cargo install cargo-mutants
       - name: Run mutant tests
@@ -58,7 +58,7 @@ jobs:
           toolchain: nightly
           components: rustfmt, clippy
           override: true
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Check format
@@ -74,7 +74,7 @@ jobs:
           toolchain: nightly
           components: llvm-tools-preview
           override: true
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage

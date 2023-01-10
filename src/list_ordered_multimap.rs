@@ -2,9 +2,9 @@
 
 #![allow(unsafe_code)]
 
-use std::{
+use alloc::vec;
+use core::{
   borrow::Borrow,
-  collections::hash_map::RandomState,
   fmt::{self, Debug, Formatter},
   hash::{BuildHasher, Hash, Hasher},
   iter::{FromIterator, FusedIterator},
@@ -18,6 +18,40 @@ use hashbrown::{
   hash_map::{RawEntryMut, RawOccupiedEntryMut},
   HashMap,
 };
+
+/// A random state to use for the hashmap in the multimap.
+#[cfg(feature = "std")]
+pub type RandomState = std::collections::hash_map::RandomState;
+
+/// A random state to use for the hashmap in the multimap.
+#[cfg(not(feature = "std"))]
+#[derive(Debug)]
+pub struct RandomState(core::convert::Infallible);
+
+#[cfg(not(feature = "std"))]
+impl RandomState {
+  /// Creates a new random state.
+  #[must_use]
+  pub fn new() -> RandomState {
+    panic!("RandomState is not available without std")
+  }
+}
+
+#[cfg(not(feature = "std"))]
+impl Default for RandomState {
+  fn default() -> RandomState {
+    RandomState::new()
+  }
+}
+
+#[cfg(not(feature = "std"))]
+impl BuildHasher for RandomState {
+  type Hasher = DummyHasher;
+
+  fn build_hasher(&self) -> Self::Hasher {
+    match self.0 {}
+  }
+}
 
 #[derive(Clone)]
 /// A multimap that associates with each key a list of values.
@@ -49,6 +83,7 @@ pub struct ListOrderedMultimap<Key, Value, State = RandomState> {
   pub(crate) values: VecList<ValueEntry<Key, Value>>,
 }
 
+#[cfg(feature = "std")]
 impl<Key, Value> ListOrderedMultimap<Key, Value, RandomState> {
   /// Creates a new multimap with no initial capacity.
   ///
@@ -1048,6 +1083,7 @@ where
   /// assert_eq!(map.values_capacity(), 5);
   /// assert_eq!(map.values_len(), 4);
   /// ```
+  #[cfg(feature = "std")]
   pub fn pack_to(&mut self, keys_minimum_capacity: usize, values_minimum_capacity: usize)
   where
     State: Default,
@@ -1116,6 +1152,7 @@ where
   /// assert_eq!(map.values_capacity(), 4);
   /// assert_eq!(map.values_len(), 4);
   /// ```
+  #[cfg(feature = "std")]
   pub fn pack_to_fit(&mut self)
   where
     State: Default,
@@ -1577,6 +1614,7 @@ where
   }
 }
 
+#[cfg(feature = "std")]
 impl<Key, Value> Default for ListOrderedMultimap<Key, Value, RandomState> {
   fn default() -> Self {
     Self::new()
@@ -3421,7 +3459,7 @@ impl BuildHasher for DummyState {
 
 /// Dummy hasher that is not meant to be used. It is simply a placeholder.
 #[derive(Clone, Debug)]
-pub(crate) struct DummyHasher;
+pub struct DummyHasher;
 
 impl Hasher for DummyHasher {
   fn finish(&self) -> u64 {
@@ -3498,7 +3536,7 @@ where
 }
 
 #[allow(unused_results)]
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test {
   use coverage_helper::test;
 

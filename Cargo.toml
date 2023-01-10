@@ -10,9 +10,13 @@ readme = "README.md"
 categories = ["data-structures"]
 
 [dependencies]
-dlv-list = "0.4.0"
-hashbrown = "0.13.2"
-serde = { version = "1", optional = true }
+dlv-list = { version = "0.5", default-features = false }
+hashbrown = { version = "0.13.2", default-features = false }
+serde = { version = "1", optional = true, default-features = false }
+
+[features]
+default = ["std"]
+std = ["dlv-list/std"]
 
 [dev-dependencies]
 coverage-helper = "0.1.0"

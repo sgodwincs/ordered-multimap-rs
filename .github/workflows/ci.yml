@@ -19,6 +19,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build & run tests
         run: cargo test --all-features
+      - name: Build without libstd
+        run: cargo build --no-default-features
+      - name: Build without libstd with serde
+        run: cargo build --no-default-features --features serde
   miri:
     runs-on: ubuntu-latest
     steps:

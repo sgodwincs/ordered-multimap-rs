@@ -31,6 +31,7 @@ pub struct RandomState(core::convert::Infallible);
 #[cfg(not(feature = "std"))]
 impl RandomState {
   /// Creates a new random state.
+  #[cfg_attr(mutants, mutants::skip)]
   #[must_use]
   pub fn new() -> RandomState {
     panic!("RandomState is not available without std")
@@ -39,6 +40,7 @@ impl RandomState {
 
 #[cfg(not(feature = "std"))]
 impl Default for RandomState {
+  #[cfg_attr(mutants, mutants::skip)]
   fn default() -> RandomState {
     RandomState::new()
   }
@@ -48,6 +50,7 @@ impl Default for RandomState {
 impl BuildHasher for RandomState {
   type Hasher = DummyHasher;
 
+  #[cfg_attr(mutants, mutants::skip)]
   fn build_hasher(&self) -> Self::Hasher {
     match self.0 {}
   }

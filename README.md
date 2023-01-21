@@ -17,6 +17,7 @@ Basic benchmarks show that the performance of this crate is on par with that of 
 
 ## Features
 
+ - `std` (default) enables usage of the standard library. Disabling this features allows this crate to be used in `no_std` environments.
  - `serde` for (de)serialization.
 
 ## TODO

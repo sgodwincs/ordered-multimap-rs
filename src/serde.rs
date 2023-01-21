@@ -78,7 +78,7 @@ where
 }
 
 #[allow(unused_results)]
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test {
   use coverage_helper::test;
   use serde_test::{assert_de_tokens_error, assert_tokens, Token};

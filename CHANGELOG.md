@@ -7,7 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-# 0.5.0 - 08/25/2022
+# 0.6.0 - 01-21-2023
+
+### Added
+
+ - Added support for `no_std` - @notgull
+
+### Changed
+
+ - Updated `dlv-list` dependency to `0.5.0`.
+ - Updated `hashbrown` dependency to `0.13.2`.
+
+# 0.5.0 - 08-25-2022
 
 ### Changed
 

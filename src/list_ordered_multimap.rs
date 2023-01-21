@@ -3659,7 +3659,7 @@ mod test {
     let mut map: ListOrderedMultimap<&str, &str> = ListOrderedMultimap::new();
     let entry = map.entry("key");
 
-    assert_eq!(format!("{:?}", entry), r#"VacantEntry("key")"#);
+    assert_eq!(format!("{entry:?}"), r#"VacantEntry("key")"#);
   }
 
   #[test]
@@ -3673,7 +3673,7 @@ mod test {
 
     let iter = map.get_all(&"key");
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"EntryValues(["value1", "value2", "value3", "value4"])"#
     );
   }
@@ -3706,7 +3706,7 @@ mod test {
 
     let iter = map.remove_all(&"key");
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"EntryValuesDrain(["value1", "value2", "value3", "value4"])"#
     );
   }
@@ -3806,7 +3806,7 @@ mod test {
 
     let iter = map.get_all_mut(&"key");
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"EntryValuesMut(["value1", "value2", "value3", "value4"])"#
     );
   }
@@ -3904,7 +3904,7 @@ mod test {
 
     let iter = map.iter();
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"Iter([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
     );
   }
@@ -3960,7 +3960,7 @@ mod test {
 
     let iter = map.iter_mut();
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"IterMut([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
     );
   }
@@ -4058,7 +4058,7 @@ mod test {
 
     let iter = map.into_iter();
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"IntoIter([("key1", "value1"), ("key2", "value2"), ("key2", "value3"), ("key1", "value4")])"#
     );
   }
@@ -4135,7 +4135,7 @@ mod test {
 
     let iter = map.pairs();
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"KeyValues([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
     );
   }
@@ -4206,7 +4206,7 @@ mod test {
 
     let iter = map.pairs_mut();
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"KeyValuesMut([("key1", EntryValues(["value1", "value4"])), ("key2", EntryValues(["value2", "value3"]))])"#
     );
   }
@@ -4310,7 +4310,7 @@ mod test {
     map.append("key1", "value4");
 
     let iter = map.keys();
-    assert_eq!(format!("{:?}", iter), r#"Keys(["key1", "key2"])"#);
+    assert_eq!(format!("{iter:?}"), r#"Keys(["key1", "key2"])"#);
   }
 
   #[test]
@@ -4455,7 +4455,7 @@ mod test {
     map.append("key1", "value4");
 
     assert_eq!(
-      format!("{:?}", map),
+      format!("{map:?}"),
       r#"{"key1": "value1", "key2": "value2", "key2": "value3", "key1": "value4"}"#
     );
   }
@@ -5191,7 +5191,7 @@ mod test {
     };
 
     assert_eq!(
-      format!("{:?}", entry),
+      format!("{entry:?}"),
       "OccupiedEntry { \
              key: \"key\", \
              values: EntryValues([\"value1\", \"value2\", \"value3\", \"value4\"]) \
@@ -5207,7 +5207,7 @@ mod test {
       _ => panic!("expected vacant entry"),
     };
 
-    assert_eq!(format!("{:?}", entry), r#"VacantEntry("key")"#);
+    assert_eq!(format!("{entry:?}"), r#"VacantEntry("key")"#);
   }
 
   #[test]
@@ -5221,7 +5221,7 @@ mod test {
 
     let iter = map.values();
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"Values(["value1", "value2", "value3", "value4"])"#
     );
   }
@@ -5277,7 +5277,7 @@ mod test {
 
     let iter = map.values_mut();
     assert_eq!(
-      format!("{:?}", iter),
+      format!("{iter:?}"),
       r#"ValuesMut(["value1", "value2", "value3", "value4"])"#
     );
   }

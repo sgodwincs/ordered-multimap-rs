@@ -4519,7 +4519,11 @@ mod test {
   #[test]
   fn test_list_ordered_multimap_extend() {
     let mut map = ListOrderedMultimap::new();
-    map.extend(vec![("key1", "value1"), ("key2", "value2"), ("key2", "value3")]);
+    map.extend(vec![
+      ("key1", "value1"),
+      ("key2", "value2"),
+      ("key2", "value3"),
+    ]);
 
     let mut iter = map.get_all(&"key1");
     assert_eq!(iter.next(), Some(&"value1"));
@@ -4545,9 +4549,11 @@ mod test {
 
   #[test]
   fn test_list_ordered_multimap_from_iterator() {
-    let map: ListOrderedMultimap<_, _, RandomState> = ListOrderedMultimap::from_iter(
-      vec![("key1", "value1"), ("key2", "value2"), ("key2", "value3")],
-    );
+    let map: ListOrderedMultimap<_, _, RandomState> = ListOrderedMultimap::from_iter(vec![
+      ("key1", "value1"),
+      ("key2", "value2"),
+      ("key2", "value3"),
+    ]);
 
     let mut iter = map.get_all(&"key1");
     assert_eq!(iter.next(), Some(&"value1"));

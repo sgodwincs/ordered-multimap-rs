@@ -19,5 +19,5 @@ default = ["std"]
 std = ["dlv-list/std"]
 
 [dev-dependencies]
-coverage-helper = "0.1.0"
+coverage-helper = "0.2.0"
 serde_test = "1.0.144"

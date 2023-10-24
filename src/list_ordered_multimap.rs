@@ -697,9 +697,8 @@ where
   /// assert_eq!(map.values_len(), 2);
   /// ```
   pub fn append(&mut self, key: Key, value: Value) -> bool {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(&key);
     let entry = raw_entry_mut(&self.keys, &mut self.map, hash, &key);
-    let build_hasher = &self.build_hasher;
 
     match entry {
       RawEntryMut::Occupied(mut entry) => {
@@ -723,7 +722,7 @@ where
         let keys = &self.keys;
         let _ = entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
           let key = keys.get(key_index).unwrap();
-          hash_key(build_hasher, key)
+          self.build_hasher.hash_one(key)
         });
         false
       }
@@ -750,7 +749,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
     raw_entry(&self.keys, &self.map, hash, key).is_some()
   }
 
@@ -770,7 +769,7 @@ where
   /// ```
   #[must_use]
   pub fn entry(&mut self, key: Key) -> Entry<'_, Key, Value, State> {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(&key);
 
     // TODO: This ugliness arises from borrow checking issues which seems to happen when the vacant entry is created in
     // the match block further below for `Vacant` even though it should be perfectly safe. Is there a better way to do
@@ -820,7 +819,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
 
     match raw_entry(&self.keys, &self.map, hash, key) {
       Some((_, map_entry)) => map_entry.length,
@@ -848,7 +847,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
     let (_, map_entry) = raw_entry(&self.keys, &self.map, hash, key)?;
     self
       .values
@@ -881,7 +880,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
 
     match raw_entry(&self.keys, &self.map, hash, key) {
       Some((_, map_entry)) => EntryValues::from_map_entry(&self.values, map_entry),
@@ -919,7 +918,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
 
     match raw_entry(&self.keys, &self.map, hash, key) {
       Some((_, map_entry)) => EntryValuesMut::from_map_entry(&mut self.values, map_entry),
@@ -954,7 +953,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
     let (_, map_entry) = raw_entry(&self.keys, &self.map, hash, key)?;
     self
       .values
@@ -1029,9 +1028,8 @@ where
   /// assert_eq!(map.get(&"key"), Some(&"value3"));
   /// ```
   pub fn insert_all(&mut self, key: Key, value: Value) -> EntryValuesDrain<'_, Key, Value> {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(&key);
     let entry = raw_entry_mut(&self.keys, &mut self.map, hash, &key);
-    let build_hasher = &self.build_hasher;
 
     match entry {
       RawEntryMut::Occupied(mut entry) => {
@@ -1050,7 +1048,7 @@ where
         let keys = &self.keys;
         let _ = entry.insert_with_hasher(hash, key_index, MapEntry::new(index), |&key_index| {
           let key = keys.get(key_index).unwrap();
-          hash_key(build_hasher, key)
+          self.build_hasher.hash_one(key)
         });
         EntryValuesDrain::empty(&mut self.values)
       }
@@ -1103,7 +1101,6 @@ where
     let key_map = self.keys.pack_to(keys_minimum_capacity);
     let value_map = self.values.pack_to(values_minimum_capacity);
     let mut map = HashMap::with_capacity_and_hasher(keys_minimum_capacity, DummyState);
-    let build_hasher = &self.build_hasher;
 
     for value_entry in self.values.iter_mut() {
       value_entry.key_index = key_map[&value_entry.key_index];
@@ -1116,14 +1113,14 @@ where
       map_entry.tail_index = value_map[&map_entry.tail_index];
       let key_index = key_map[&key_index];
       let key = self.keys.get(key_index).unwrap();
-      let hash = hash_key(&self.build_hasher, key);
+      let hash = self.build_hasher.hash_one(key);
 
       match map.raw_entry_mut().from_hash(hash, |_| false) {
         RawEntryMut::Vacant(entry) => {
           let keys = &self.keys;
           let _ = entry.insert_with_hasher(hash, key_index, map_entry, |&key_index| {
             let key = keys.get(key_index).unwrap();
-            hash_key(build_hasher, key)
+            self.build_hasher.hash_one(key)
           });
         }
         _ => panic!("expected vacant entry"),
@@ -1199,7 +1196,7 @@ where
     let key_wrapper = match value_entry.previous_index {
       Some(previous_index) => {
         let key = self.keys.get(value_entry.key_index).unwrap();
-        let hash = hash_key(&self.build_hasher, &key);
+        let hash = self.build_hasher.hash_one(key);
 
         let mut entry = match raw_entry_mut(&self.keys, &mut self.map, hash, key) {
           RawEntryMut::Occupied(entry) => entry,
@@ -1216,7 +1213,7 @@ where
       }
       None => {
         let key = self.keys.remove(value_entry.key_index).unwrap();
-        let hash = hash_key(&self.build_hasher, &key);
+        let hash = self.build_hasher.hash_one(&key);
 
         match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
           RawEntryMut::Occupied(entry) => {
@@ -1268,7 +1265,7 @@ where
     let key_wrapper = match value_entry.next_index {
       Some(next_index) => {
         let key = self.keys.get(value_entry.key_index).unwrap();
-        let hash = hash_key(&self.build_hasher, &key);
+        let hash = self.build_hasher.hash_one(key);
 
         let mut entry = match raw_entry_mut(&self.keys, &mut self.map, hash, key) {
           RawEntryMut::Occupied(entry) => entry,
@@ -1285,7 +1282,7 @@ where
       }
       None => {
         let key = self.keys.remove(value_entry.key_index).unwrap();
-        let hash = hash_key(&self.build_hasher, &key);
+        let hash = self.build_hasher.hash_one(&key);
 
         match raw_entry_mut_empty(&self.keys, &mut self.map, hash) {
           RawEntryMut::Occupied(entry) => {
@@ -1366,7 +1363,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
     let entry = raw_entry_mut(&self.keys, &mut self.map, hash, key);
 
     match entry {
@@ -1452,7 +1449,7 @@ where
     Key: Borrow<KeyQuery>,
     KeyQuery: ?Sized + Eq + Hash,
   {
-    let hash = hash_key(&self.build_hasher, &key);
+    let hash = self.build_hasher.hash_one(key);
     let entry = raw_entry_mut(&self.keys, &mut self.map, hash, key);
 
     match entry {
@@ -1497,7 +1494,7 @@ where
 
     for (key_index, map_entry) in self.map.drain() {
       let key = self.keys.get(key_index).unwrap();
-      let hash = hash_key(&self.build_hasher, key);
+      let hash = self.build_hasher.hash_one(key);
       let entry = match raw_entry_mut(&self.keys, &mut map, hash, key) {
         RawEntryMut::Vacant(entry) => entry,
         _ => panic!("expected vacant entry"),
@@ -1563,7 +1560,7 @@ where
       if function(key, &mut value_entry.value) {
         true
       } else {
-        let hash = hash_key(build_hasher, key);
+        let hash = build_hasher.hash_one(key);
         let mut entry = match raw_entry_mut(keys, map, hash, key) {
           RawEntryMut::Occupied(entry) => entry,
           _ => panic!("expected occupied entry in internal map"),
@@ -2478,7 +2475,6 @@ where
   /// assert_eq!(entry.insert("value"), &"value");
   /// ```
   pub fn insert(self, value: Value) -> &'map mut Value {
-    let build_hasher = self.build_hasher;
     let entry = match raw_entry_mut(self.keys, self.map, self.hash, &self.key) {
       RawEntryMut::Vacant(entry) => entry,
       _ => panic!("expected vacant entry"),
@@ -2490,7 +2486,7 @@ where
     let keys = &self.keys;
     let _ = entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
       let key = keys.get(key_index).unwrap();
-      hash_key(build_hasher, key)
+      self.build_hasher.hash_one(key)
     });
 
     &mut self.values.get_mut(index).unwrap().value
@@ -2513,7 +2509,6 @@ where
   /// assert_eq!(entry.get(), &"value");
   /// ```
   pub fn insert_entry(self, value: Value) -> OccupiedEntry<'map, Key, Value> {
-    let build_hasher = self.build_hasher;
     let entry = match raw_entry_mut(self.keys, self.map, self.hash, &self.key) {
       RawEntryMut::Vacant(entry) => entry,
       _ => panic!("expected vacant entry"),
@@ -2525,7 +2520,7 @@ where
     let keys = &self.keys;
     let _ = entry.insert_with_hasher(self.hash, key_index, map_entry, |&key_index| {
       let key = keys.get(key_index).unwrap();
-      hash_key(build_hasher, key)
+      self.build_hasher.hash_one(key)
     });
 
     let key = self.keys.get(key_index).unwrap();
@@ -3166,7 +3161,7 @@ where
 {
   fn next_back(&mut self) -> Option<Self::Item> {
     let key = self.iter.next_back()?;
-    let hash = hash_key(self.build_hasher, key);
+    let hash = self.build_hasher.hash_one(key);
     let (_, map_entry) = raw_entry(self.keys, self.map, hash, key).unwrap();
     let iter = EntryValues::from_map_entry(self.values, map_entry);
     Some((key, iter))
@@ -3196,7 +3191,7 @@ where
 
   fn next(&mut self) -> Option<Self::Item> {
     let key = self.iter.next()?;
-    let hash = hash_key(self.build_hasher, key);
+    let hash = self.build_hasher.hash_one(key);
     let (_, map_entry) = raw_entry(self.keys, self.map, hash, key).unwrap();
     let iter = EntryValues::from_map_entry(self.values, map_entry);
     Some((key, iter))
@@ -3260,7 +3255,7 @@ where
 {
   fn next_back(&mut self) -> Option<Self::Item> {
     let key = self.iter.next_back()?;
-    let hash = hash_key(self.build_hasher, key);
+    let hash = self.build_hasher.hash_one(key);
     let (_, map_entry) = raw_entry(self.keys, self.map, hash, key).unwrap();
     let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, map_entry);
     Some((key, iter))
@@ -3290,7 +3285,7 @@ where
 
   fn next(&mut self) -> Option<Self::Item> {
     let key = self.iter.next()?;
-    let hash = hash_key(self.build_hasher, key);
+    let hash = self.build_hasher.hash_one(key);
     let (_, map_entry) = raw_entry(self.keys, self.map, hash, key).unwrap();
     let iter = EntryValuesMut::from_map_entry(unsafe { &mut *self.values }, map_entry);
     Some((key, iter))
@@ -3474,18 +3469,6 @@ impl Hasher for DummyHasher {
   }
 }
 
-/// Computes the hash value of the given key.
-#[must_use]
-fn hash_key<KeyQuery, State>(state: &State, key: &KeyQuery) -> u64
-where
-  KeyQuery: ?Sized + Eq + Hash,
-  State: BuildHasher,
-{
-  let mut hasher = state.build_hasher();
-  key.hash(&mut hasher);
-  hasher.finish()
-}
-
 #[must_use]
 fn raw_entry<'map, Key, KeyQuery, Value, State>(
   keys: &VecList<Key>,
@@ -3587,7 +3570,7 @@ mod test {
     let mut map = ListOrderedMultimap::with_hasher(TestBuildHasher);
     let state = map.hasher();
 
-    assert_eq!(hash_key(state, "key1"), hash_key(state, "key2"));
+    assert_eq!(state.hash_one("key1"), state.hash_one("key2"));
 
     map.insert("key1", "value1");
     assert_eq!(map.get(&"key1"), Some(&"value1"));
@@ -3599,8 +3582,8 @@ mod test {
   #[test]
   fn test_no_collision() {
     let state = RandomState::new();
-    let hash_1 = hash_key(&state, "key1");
-    let hash_2 = hash_key(&state, "key2");
+    let hash_1 = state.hash_one("key1");
+    let hash_2 = state.hash_one("key2");
 
     assert!(hash_1 != hash_2);
   }

@@ -8,6 +8,7 @@ repository = "https://github.com/sgodwincs/ordered-multimap-rs"
 description = "Insertion ordered multimap"
 readme = "README.md"
 categories = ["data-structures"]
+rust-version = "1.64.0"
 
 [dependencies]
 dlv-list = { version = "0.5", default-features = false }

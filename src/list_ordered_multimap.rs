@@ -7,8 +7,9 @@ use core::{
   borrow::Borrow,
   fmt::{self, Debug, Formatter},
   hash::{BuildHasher, Hash, Hasher},
-  iter::{FromIterator, FusedIterator},
+  iter::FusedIterator,
   marker::PhantomData,
+  mem,
 };
 
 use dlv_list::{
@@ -1369,7 +1370,7 @@ where
     match entry {
       RawEntryMut::Occupied(entry) => {
         let (key_index, map_entry) = entry.remove_entry();
-        let _ = self.keys.remove(key_index).unwrap();
+        mem::drop(self.keys.remove(key_index).unwrap());
         EntryValuesDrain::from_map_entry(&mut self.values, &map_entry)
       }
       RawEntryMut::Vacant(_) => EntryValuesDrain::empty(&mut self.values),
@@ -1568,7 +1569,7 @@ where
 
         if value_entry.previous_index.is_none() && value_entry.next_index.is_none() {
           let _ = entry.remove();
-          let _ = keys.remove(value_entry.key_index);
+          mem::drop(keys.remove(value_entry.key_index));
         } else {
           let map_entry = entry.get_mut();
           map_entry.length -= 1;
@@ -3456,7 +3457,7 @@ impl BuildHasher for DummyState {
 }
 
 /// Dummy hasher that is not meant to be used. It is simply a placeholder.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct DummyHasher;
 
 impl Hasher for DummyHasher {

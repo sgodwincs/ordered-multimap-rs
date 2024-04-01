@@ -1,6 +1,6 @@
 [package]
 name = "ordered-multimap"
-version = "0.7.3"
+version = "0.7.4"
 authors = ["Scott Godwin <sgodwincs@gmail.com>"]
 license = "MIT"
 edition = "2021"

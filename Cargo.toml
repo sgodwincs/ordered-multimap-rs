@@ -11,7 +11,7 @@ categories = ["data-structures"]
 rust-version = "1.71.1"
 
 [dependencies]
-dlv-list = { version = "0.5", default-features = false }
+dlv-list = { version = "0.6", default-features = false }
 hashbrown = { version = "0.14.0", default-features = false }
 serde = { version = "1", optional = true, default-features = false }
 
